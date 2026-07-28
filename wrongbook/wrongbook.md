@@ -1065,3 +1065,114 @@ auto&& b = 3; // b 的声明类型是 int&&
 但随后单独写表达式 `b` 时，`b` 是有名字的变量，因此表达式 `b` 是左值。声明类型和值类别是两个不同概念。
 
 **一句话记忆：** `int&` 是已有 `int` 对象的左值引用；`auto&&` 遇到左值时通过推导和引用折叠变成 `int&`，遇到右值时才得到 `int&&`。
+
+## W013：`decltype` 是什么？
+
+**问题：** C++11 中的 `decltype` 是什么？它怎样确定类型？
+
+**核心答案：** `decltype` 是 C++11 的类型说明符，用来在编译期取得一个名字或表达式对应的类型。它的操作数通常不会被执行。对未加括号的名字采用“取得声明类型”的特殊规则；对其他表达式，则根据表达式的值类别决定得到 `T`、`T&` 还是 `T&&`。
+
+### 1. 基本写法
+
+```cpp
+int value = 1;
+decltype(value) another = 2;
+```
+
+`value` 声明为 `int`，所以 `decltype(value)` 是 `int`，等价于：
+
+```cpp
+int another = 2;
+```
+
+`decltype` 得到的是类型，自己不会创建对象；只有把得到的类型放进声明中，才会定义变量。
+
+### 2. 未加括号名字的特殊规则
+
+当操作数是未加括号的变量名时，`decltype` 直接得到该实体声明时的类型，包括引用和 `const`：
+
+```cpp
+int value = 1;
+const int fixed = 2;
+int& alias = value;
+
+decltype(value) a = 3; // int
+decltype(fixed) b = 4; // const int
+decltype(alias) c = value; // int&
+```
+
+### 3. 一般表达式规则
+
+如果没有命中“未加括号名字”的特殊规则，则根据表达式值类别判断：
+
+```text
+左值表达式   → T&
+将亡值表达式 → T&&
+纯右值表达式 → T
+```
+
+例如：
+
+```cpp
+int value = 1;
+
+decltype((value)) a = value; // int&，因为 (value) 是左值
+decltype(value + 1) b = 2;   // int，因为 value + 1 是纯右值
+```
+
+### 4. 为什么括号会改变结果？
+
+```cpp
+int value = 1;
+
+decltype(value) copy = 2;      // int
+decltype((value)) alias = value; // int&
+```
+
+`decltype(value)` 命中名字特殊规则，得到声明类型 `int`；额外括号使其按一般表达式处理，而 `(value)` 是左值，所以得到 `int&`。
+
+这是 `decltype` 最重要的易错点之一。
+
+### 5. 操作数通常不执行
+
+```cpp
+int i = 0;
+decltype(i++) result = 0;
+```
+
+`i++` 用于分析类型和值类别，但不会真正执行，因此 `i` 仍为 `0`。不过表达式仍然必须语法正确并且能够通过类型检查。
+
+### 6. 与 `auto` 的区别
+
+```cpp
+const int value = 3;
+
+auto a = value;        // int，普通按值 auto 丢弃顶层 const
+decltype(value) b = 4; // const int，保留声明类型
+```
+
+普通 `auto` 根据初始化器推导变量类型，并通常丢弃引用和顶层 `const`；`decltype` 检查指定名字或表达式，并按照自己的规则保留或产生引用。
+
+### 7. C++11 的典型用途
+
+当返回类型依赖参数表达式时，可以使用尾置返回类型：
+
+```cpp
+template<class T, class U>
+auto add(T left, U right) -> decltype(left + right)
+{
+    return left + right;
+}
+```
+
+C++11 中，函数名前面的 `auto` 表示真正的返回类型写在 `->` 后；`decltype(left + right)` 根据加法表达式确定返回类型。
+
+### 8. 版本边界
+
+`decltype` 属于 C++11，但 `decltype(auto)` 是 C++14 引入的写法，严格 C++11 代码不能使用：
+
+```cpp
+// decltype(auto) result = expression; // 不是 C++11
+```
+
+**一句话记忆：** `decltype(name)` 通常取得名字的声明类型；`decltype((expression))` 等一般形式根据值类别得到 `T`、`T&` 或 `T&&`，并且只分析表达式而不执行它。
