@@ -1,0 +1,27 @@
+# Windows
+Thumbs.db
+Desktop.ini
+~$*
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*.tmp
+
+# Native build products
+*.obj
+*.o
+*.exe
+*.dll
+*.so
+*.a
+*.lib
+build/
+cmake-build-*/
+
+# Local and sensitive files
+.env
+.env.*
+*.key
+*.pem
