@@ -1176,3 +1176,114 @@ C++11 中，函数名前面的 `auto` 表示真正的返回类型写在 `->` 后
 ```
 
 **一句话记忆：** `decltype(name)` 通常取得名字的声明类型；`decltype((expression))` 等一般形式根据值类别得到 `T`、`T&` 或 `T&&`，并且只分析表达式而不执行它。
+
+## W014：什么是将亡值，为什么 `decltype` 得到 `T&&`？
+
+**问题：** `decltype` 规则中的“将亡值 → T&&”是什么意思？
+
+**核心答案：** 将亡值（xvalue）是 C++11 的表达式值类别，不是对象类型。它指代一个仍然存在的对象，但表达式表示该对象的资源可以被移动操作复用。对一般表达式使用 `decltype` 时，如果表达式是 `T` 类型的将亡值，结果就是右值引用类型 `T&&`。
+
+### 1. 类型和值类别不是一回事
+
+```cpp
+int value = 1;
+```
+
+- `value` 对象的类型是 `int`。
+- 单独写表达式 `value` 时，它是左值。
+- 写 `std::move(value)` 时，表达式是将亡值。
+- `int&&` 是右值引用类型。
+
+所以“将亡值”描述表达式怎样指代对象，`T&&` 描述引用的类型。
+
+### 2. 三种常见表达式
+
+```cpp
+int value = 1;
+
+value;             // 左值：指代一个有名字、可定位的对象
+3;                 // 纯右值：产生一个值
+std::move(value);  // 将亡值：仍指代 value，但允许移动其资源
+```
+
+简化对比：
+
+| 表达式类别 | 是否指代已有对象 | 典型例子 |
+|---|---|---|
+| 左值 | 是 | `value` |
+| 纯右值 | 通常用于产生值 | `3`、`a + b` |
+| 将亡值 | 是，但可被当作资源来源 | `std::move(value)` |
+
+将亡值既属于泛左值，因为它指代对象；也属于右值，因为它可以绑定到右值引用并参与移动。
+
+### 3. `std::move` 不会自己移动对象
+
+```cpp
+#include <string>
+#include <utility>
+
+std::string source = "hello";
+std::string target = std::move(source);
+```
+
+`std::move(source)` 只是把表达式转换成将亡值，使移动构造函数成为可选项。真正转移字符串资源的是 `std::string` 的移动构造函数。
+
+移动后：
+
+- `source` 对象仍然活着。
+- 它仍然必须能够安全析构和重新赋值。
+- 它的具体内容通常处于有效但未指定状态。
+
+所以“将亡”不表示对象已经销毁，也不保证它马上销毁。
+
+### 4. 为什么 `decltype` 得到 `T&&`？
+
+对没有命中“未加括号名字”特殊规则的一般表达式：
+
+```text
+左值表达式   → decltype 得到 T&
+将亡值表达式 → decltype 得到 T&&
+纯右值表达式 → decltype 得到 T
+```
+
+例如：
+
+```cpp
+#include <utility>
+
+int value = 1;
+decltype(std::move(value)) reference = 2;
+```
+
+`std::move(value)` 是 `int` 类型的将亡值，所以：
+
+```cpp
+decltype(std::move(value))
+```
+
+得到：
+
+```cpp
+int&&
+```
+
+### 5. 有名字的右值引用变量仍是左值表达式
+
+```cpp
+int&& reference = 3;
+```
+
+`reference` 的声明类型是 `int&&`，但表达式 `reference` 有名字，所以它是左值：
+
+```cpp
+decltype(reference)   a = 4;         // int&&：名字特殊规则
+decltype((reference)) b = reference; // int&：一般表达式规则
+```
+
+如果要再次把它作为将亡值使用，需要：
+
+```cpp
+std::move(reference)
+```
+
+**一句话记忆：** 将亡值是“仍指向现有对象、但允许复用其资源”的表达式；`std::move(x)` 是典型将亡值，因此一般 `decltype` 规则得到 `T&&`。
