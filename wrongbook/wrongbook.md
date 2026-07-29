@@ -1056,6 +1056,60 @@ const int& d = fixed; // 正确
 const int& e = 3;     // 正确
 ```
 
+### 3.1 非常量引用与常量引用的完整对比
+
+```cpp
+int value = 1;
+const int fixed = 2;
+
+int& a = value;
+const int& b = value;
+const int& c = fixed;
+const int& d = 3;
+```
+
+四个声明都合法，但绑定含义不同：
+
+| 引用 | 最终类型 | 绑定对象 | 能否通过引用修改 |
+|---|---|---|---:|
+| `a` | `int&` | 可修改对象 `value` | 可以 |
+| `b` | `const int&` | 可修改对象 `value` | 不可以 |
+| `c` | `const int&` | 常量对象 `fixed` | 不可以 |
+| `d` | `const int&` | 为纯右值 `3` 产生的临时对象 | 不可以 |
+
+`const int& b = value;` 只限制通过 `b` 修改，不会把 `value` 永久变成常量：
+
+```cpp
+value = 10; // 正确
+```
+
+之后通过 `b` 读取到的也是 `10`，因为 `b` 仍引用同一个 `value`：
+
+```cpp
+// b = 20; // 错误：不能通过 const int& 修改
+```
+
+`const int& d = 3;` 会把为绑定而产生的临时整数生命周期延长到局部引用 `d` 的生命周期结束：
+
+```cpp
+{
+    const int& d = 3;
+    // 在此作用域内 d 可安全读取
+}
+// 离开作用域后，临时对象和引用 d 的生命周期结束
+```
+
+不能把这条规则误用为“所有临时对象引用都安全”。例如从函数返回一个绑定到局部临时对象的引用，仍可能形成悬空引用。
+
+常量引用还可能绑定到经过类型转换产生的临时对象：
+
+```cpp
+double number = 3.8;
+const int& reference = number;
+```
+
+这里 `reference` 不是引用 `number` 本身，而是引用由 `3.8` 转换得到的临时 `int`，其值为 `3`。之后修改 `number` 不会改变 `reference` 读到的值。
+
 ### 4. 具名右值引用变量本身是左值表达式
 
 ```cpp
