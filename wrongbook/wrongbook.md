@@ -2919,3 +2919,203 @@ epsilon() = 1 附近的间距
 ```
 
 **一句话记忆：** 整数的 `MIN` 是最负值，浮点的 `MIN` 却是最小正正规值；位掩码优先使用无符号类型，并始终检查整数提升、移位数量和运算符优先级。
+
+## W021：浮点数如何进行位运算？
+
+**问题：** `float`、`double` 能否直接使用位运算符？如果想读取或修改它们的二进制表示，C++11 应怎样做？
+
+**核心答案：** C++11 的内置位运算只接受整数或非强作用域枚举，不能直接对 `float`、`double` 使用。若确实要检查对象表示，应使用 `std::memcpy` 把字节复制到同尺寸无符号整数中，再对整数进行位运算；不能用普通数值转换、违反严格别名规则的指针转换或不具可移植性的联合体类型双关。
+
+### 1. 浮点数不能直接进行位运算
+
+```cpp
+float value = 5.5f;
+
+// value & 1;   // 编译错误
+// value << 1;  // 编译错误
+// ~value;      // 编译错误
+```
+
+`&`、`|`、`^`、`~`、`<<`、`>>` 的内置版本不接受浮点类型。
+
+### 2. 数值转换不等于复制位模式
+
+```cpp
+float value = 5.5f;
+unsigned int number = static_cast<unsigned int>(value);
+```
+
+这里进行的是数值转换：
+
+```text
+5.5f → 5u
+```
+
+`number` 得到 `5`，不是 `5.5f` 的浮点对象表示。
+
+### 3. C++11 中安全读取位模式：`std::memcpy`
+
+```cpp
+#include <cstdint>
+#include <cstring>
+
+std::uint32_t bits_of_float(float value)
+{
+    static_assert(sizeof(float) == sizeof(std::uint32_t),
+                  "this implementation does not use a 32-bit float");
+
+    std::uint32_t bits = 0;
+    std::memcpy(&bits, &value, sizeof(bits));
+    return bits;
+}
+
+float float_from_bits(std::uint32_t bits)
+{
+    static_assert(sizeof(float) == sizeof(std::uint32_t),
+                  "this implementation does not use a 32-bit float");
+
+    float value = 0.0f;
+    std::memcpy(&value, &bits, sizeof(value));
+    return value;
+}
+```
+
+使用：
+
+```cpp
+float value = 5.5f;
+std::uint32_t bits = bits_of_float(value);
+
+bits ^= 0x80000000u; // 在常见 IEEE 754 binary32 中翻转符号位
+
+float changed = float_from_bits(bits);
+```
+
+在常见 IEEE 754 32 位 `float` 实现中，`changed` 通常为 `-5.5f`。但 ISO C++11 不保证 `float` 一定是 IEEE 754 binary32，也不保证符号位一定处于该位置，所以这段掩码代码依赖表示格式。
+
+### 4. 常见 IEEE 754 binary32 布局
+
+常见的 32 位 `float` 布局为：
+
+```text
+31          30               23 22                       0
++--------------+---------------+--------------------------+
+| 符号位 1 bit | 指数位 8 bits | 小数部分 23 bits         |
++--------------+---------------+--------------------------+
+```
+
+常见掩码：
+
+```cpp
+const std::uint32_t sign_mask     = 0x80000000u;
+const std::uint32_t exponent_mask = 0x7F800000u;
+const std::uint32_t fraction_mask = 0x007FFFFFu;
+
+std::uint32_t sign = (bits & sign_mask) >> 31;
+std::uint32_t exponent = (bits & exponent_mask) >> 23;
+std::uint32_t fraction = bits & fraction_mask;
+```
+
+这些掩码只适用于已经确认采用相应 IEEE 754 binary32 对象表示的环境。
+
+### 5. `double` 的常见做法
+
+```cpp
+#include <cstdint>
+#include <cstring>
+
+std::uint64_t bits_of_double(double value)
+{
+    static_assert(sizeof(double) == sizeof(std::uint64_t),
+                  "this implementation does not use a 64-bit double");
+
+    std::uint64_t bits = 0;
+    std::memcpy(&bits, &value, sizeof(bits));
+    return bits;
+}
+```
+
+常见 IEEE 754 binary64 布局为：
+
+```text
+1 位符号 + 11 位指数 + 52 位小数部分
+```
+
+但它同样不是所有 ISO C++11 实现都必须采用的格式。
+
+### 6. 不要使用这些写法
+
+#### 6.1 违反严格别名规则的指针读取
+
+```cpp
+float value = 5.5f;
+
+// 未定义行为或同时存在对齐风险：
+// std::uint32_t bits =
+//     *reinterpret_cast<std::uint32_t*>(&value);
+```
+
+`float` 对象不能随意通过不相容的 `std::uint32_t*` 解引用读取。
+
+#### 6.2 联合体类型双关
+
+```cpp
+union FloatBits {
+    float floating;
+    std::uint32_t integer;
+};
+```
+
+写入 `floating` 后读取非活动成员 `integer` 不是可移植的 ISO C++11 类型双关方案。部分编译器把它作为扩展支持，但标准 C++11 代码应使用 `std::memcpy`。
+
+#### 6.3 普通强制转换
+
+```cpp
+unsigned int result = static_cast<unsigned int>(value);
+```
+
+它转换数值，不复制对象表示。
+
+### 7. 修改任意位模式的风险
+
+任意修改浮点位模式可能产生：
+
+- 正数或负数。
+- 正零或负零。
+- 次正规数。
+- 正无穷或负无穷。
+- quiet NaN 或 signaling NaN。
+- 当前实现不支持或会陷阱的表示。
+
+从一个有效浮点对象复制出位模式，再原样复制回来，适合用于同一实现中的无损往返。把任意网络字节或整数位模式直接解释成浮点数，则必须先约定浮点格式、字节序和有效表示。
+
+### 8. 只想处理数学属性时不要操作位模式
+
+标准库通常更合适：
+
+```cpp
+#include <cmath>
+
+int exponent = 0;
+
+bool negative = std::signbit(value);          // 查询符号
+float copied = std::copysign(3.0f, value);    // 复制符号
+bool is_nan = std::isnan(value);              // 是否为 NaN
+bool is_infinite = std::isinf(value);         // 是否为无穷
+float fraction = std::frexp(value, &exponent);// 分解有效数与指数
+float rebuilt = std::ldexp(fraction, exponent);// 按 2 的幂缩放
+```
+
+这些接口表达的是数学语义，不要求程序自行假定浮点对象的位布局。
+
+### 9. C++20 与 C++11 的边界
+
+C++20 提供：
+
+```cpp
+std::bit_cast
+```
+
+但它不属于 C++11。严格 C++11 中应使用 `std::memcpy`。
+
+**一句话记忆：** 浮点数不能直接位运算；普通强制转换改变数值，`std::memcpy` 才能在 C++11 中安全复制对象表示，而具体符号位、指数位和小数位布局仍然取决于实现。
