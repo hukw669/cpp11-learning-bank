@@ -2430,3 +2430,492 @@ constexpr int cube(int number);
 6. 示例是否偷偷使用了 C++14、C++17 或 C++20 才加入的规则？
 
 **一句话记忆：** C++11 的 `constexpr` 对对象表示“这个初始化必须是常量表达式，而且对象只读”；对函数表示“满足条件的调用可以成为常量表达式”，而不是“每次调用都强制在编译期执行”。
+
+## W020：位运算与基本数值类型极限
+
+**问题：** C++11 的位运算怎样使用？`INT_MAX`、`FLT_MAX`、`DBL_MAX` 等宏分别表示什么？怎样查询各类型的最小值和最大值？
+
+**核心答案：** 位运算直接处理整数的二进制位，基础运算符是 `&`、`|`、`^`、`~`、`<<`、`>>`。为了避免符号表示和移位规则带来的问题，位掩码通常使用无符号整数。整数极限宏来自 `<climits>`，浮点极限宏来自 `<cfloat>`；C++ 中更统一、类型安全的查询方式是 `<limits>` 中的 `std::numeric_limits<T>`。最容易混淆的是：对浮点类型，`FLT_MIN` 和 `DBL_MIN` 表示最小正正规数，不是最负数。
+
+### 1. 六个位运算符
+
+假设只观察最低三位：
+
+```text
+a = 6 = 110
+b = 3 = 011
+```
+
+| 运算 | 名称 | 逐位规则 | 示例结果 |
+|---|---|---|---:|
+| `a & b` | 按位与 | 两位都为 `1` 才是 `1` | `010`，即 `2` |
+| `a \| b` | 按位或 | 至少一位为 `1` 就是 `1` | `111`，即 `7` |
+| `a ^ b` | 按位异或 | 两位不同才是 `1` | `101`，即 `5` |
+| `~a` | 按位取反 | 每一位 `0/1` 互换 | 取决于完整类型位宽 |
+| `a << n` | 左移 | 向左移动 `n` 位 | 受类型和范围规则限制 |
+| `a >> n` | 右移 | 向右移动 `n` 位 | 有符号负数结果与实现有关 |
+
+`~a` 会翻转类型的全部位，不能只按写出来的三位计算。若 `unsigned int` 有 32 个值位，`~6u` 翻转的是完整 32 位。
+
+### 1.1 异或与同或
+
+异或已经是 C++ 的内置运算符 `^`：
+
+```text
+0 ^ 0 = 0
+0 ^ 1 = 1
+1 ^ 0 = 1
+1 ^ 1 = 0
+```
+
+即“两位不同为 `1`，相同为 `0`”。常见性质：
+
+```cpp
+x ^ 0u == x;
+x ^ x == 0u;
+x ^ y ^ y == x;
+```
+
+C++ 没有独立的同或运算符。同或是异或的取反：
+
+```cpp
+unsigned int xnor = ~(left ^ right);
+```
+
+同或的真值表：
+
+```text
+0 XNOR 0 = 1
+0 XNOR 1 = 0
+1 XNOR 0 = 0
+1 XNOR 1 = 1
+```
+
+即“两位相同为 `1`，不同为 `0`”。`~` 会处理完整类型的全部位；若只关注低 `N` 位，必须再加宽度掩码：
+
+```cpp
+unsigned int low4_xnor =
+    ~(left ^ right) & 0xFu; // 只保留低 4 位
+```
+
+对两个布尔条件，逻辑异或和同或可直接写成：
+
+```cpp
+bool logical_xor  = left_condition != right_condition;
+bool logical_xnor = left_condition == right_condition;
+```
+
+不要把按位取反 `~` 当成逻辑非 `!`。
+
+它们还有复合赋值形式：
+
+```cpp
+flags &= mask;
+flags |= mask;
+flags ^= mask;
+flags <<= count;
+flags >>= count;
+```
+
+### 2. 位运算不是逻辑运算
+
+| 位运算 | 逻辑运算 |
+|---|---|
+| `&` | `&&` |
+| `\|` | `\|\|` |
+| `~` | `!` |
+
+位运算处理整数的每一位；逻辑运算把操作数解释为真假，结果是 `bool`。`&&` 和 `||` 具有短路求值，普通内置位运算 `&` 和 `|` 没有短路性质。
+
+### 3. 位掩码的四个基本操作
+
+```cpp
+#include <limits>
+
+using U = unsigned int;
+
+U flags = 0;
+unsigned int index = 3;
+
+if (index < std::numeric_limits<U>::digits) {
+    U mask = U(1) << index;
+
+    flags |= mask;                  // 置 1
+    flags &= ~mask;                 // 清 0
+    flags ^= mask;                  // 翻转
+    bool is_set = (flags & mask) != 0; // 测试
+}
+```
+
+记忆：
+
+```text
+置位：|
+清位：& ~
+翻转：^
+测试：& 后与 0 比较
+```
+
+`std::numeric_limits<U>::digits` 对无符号整数表示值位数量。先检查 `index`，避免移位数量越界。
+
+### 4. 为什么掩码常用无符号整数
+
+```cpp
+unsigned int mask = 1u << index;
+```
+
+后缀 `u` 使字面量 `1u` 的类型为 `unsigned int`。使用无符号类型的原因包括：
+
+- 无符号整数按模算术定义，位模式和数值关系更直接。
+- 无符号右移按补零方式处理。
+- 避免负有符号数的表示方式和右移规则差异。
+- 避免有符号左移超出可表示范围时的未定义行为。
+
+C++11 不要求有符号整数一定采用二进制补码，还允许其他符合要求的表示，因此底层位操作不要依赖“所有机器都和当前机器一样”。
+
+### 5. C++11 的移位边界
+
+对于：
+
+```cpp
+left << count
+left >> count
+```
+
+必须记住：
+
+1. 两个操作数会进行整数提升。
+2. 结果类型是提升后的左操作数类型。
+3. `count < 0` 是未定义行为。
+4. `count` 大于或等于提升后左操作数的位数，是未定义行为。
+5. 无符号左移按相应模数处理。
+6. 负有符号数左移是未定义行为。
+7. 非负有符号数左移若数学结果不能由结果类型表示，是未定义行为。
+8. 无符号数或非负有符号数右移，相当于除以 `2^count` 后取整数部分。
+9. 负有符号数右移的结果在 C++11 中由实现定义。
+
+因此：
+
+```cpp
+unsigned int good = 1u << 3; // 典型结果为 8
+
+// 若 unsigned int 有 N 个值位：
+// 1u << N;                   // 错误：移位数量越界，未定义行为
+
+int negative = -1;
+// negative << 1;             // 未定义行为
+// negative >> 1;             // C++11：结果由实现定义
+```
+
+最稳妥的基础规则是：位运算使用明确的无符号类型，并在移位前检查数量。
+
+字面量本身的类型必须足够宽：
+
+```cpp
+unsigned long long wide_mask = 1ULL << 40; // 正确：先用宽类型移位
+
+// 若 unsigned int 只有 32 位，下面在赋值前就已经出错：
+// unsigned long long bad_mask = 1u << 40;
+```
+
+后续赋给更宽类型不能挽救已经在较窄类型中发生的非法移位。`1u` 只是 `unsigned int`，不表示“任意宽的无符号数”。
+
+### 6. 整数提升会改变结果类型
+
+`bool`、`char`、`signed char`、`unsigned char`、`short` 等小整数类型参与许多位运算时，会先提升为 `int`；若 `int` 不能表示原类型全部值，才提升为 `unsigned int`。
+
+```cpp
+unsigned char byte = 0x0F;
+auto result = ~byte;
+```
+
+`result` 通常是 `int`，不是 `unsigned char`。因为 `byte` 先被提升，再对完整的 `int` 位宽取反。若只想保留一个字节，应在确认目标语义后显式转换：
+
+```cpp
+unsigned char inverted =
+    static_cast<unsigned char>(~byte);
+```
+
+同理，两个不同整数类型执行 `&`、`|`、`^` 时还会进行通常算术转换；混合有符号与无符号类型可能把有符号值转成无符号值。
+
+### 7. 优先级陷阱
+
+下面的写法不是通常想表达的意思：
+
+```cpp
+if (flags & mask == 0) {
+}
+```
+
+`==` 的优先级高于按位与 `&`，所以它按下面方式分组：
+
+```cpp
+flags & (mask == 0)
+```
+
+正确写法：
+
+```cpp
+if ((flags & mask) == 0) {
+}
+```
+
+涉及位运算和比较时主动加括号，不要靠记忆猜优先级。
+
+C++11 还没有标准二进制整数字面量：
+
+```cpp
+// unsigned int mask = 0b1010; // C++14 才成为标准写法
+unsigned int mask = 0xAu;      // C++11 可用
+```
+
+### 8. `enum class` 不能直接进行内置位运算
+
+```cpp
+enum class Permission : unsigned int {
+    read  = 1u << 0,
+    write = 1u << 1
+};
+
+// Permission::read | Permission::write; // 没有内置的匹配运算
+```
+
+`enum class` 不会隐式转换为整数。若要把它设计成标志集合，应为该枚举明确重载所需位运算符，或者在边界处显式转换到底层无符号类型；不要无意中把强类型枚举退化成任意整数。
+
+流表达式中的：
+
+```cpp
+std::cout << value;
+std::cin >> value;
+```
+
+使用的是重载后的 `operator<<` 和 `operator>>`，语义是流插入和流提取，不是在移动整数位。
+
+### 9. 整数极限宏：`<climits>`
+
+```cpp
+#include <climits>
+```
+
+| 类型 | 最小值宏 | 最大值宏 |
+|---|---|---|
+| `signed char` | `SCHAR_MIN` | `SCHAR_MAX` |
+| `unsigned char` | 固定为 `0` | `UCHAR_MAX` |
+| 普通 `char` | `CHAR_MIN` | `CHAR_MAX` |
+| `short` | `SHRT_MIN` | `SHRT_MAX` |
+| `unsigned short` | 固定为 `0` | `USHRT_MAX` |
+| `int` | `INT_MIN` | `INT_MAX` |
+| `unsigned int` | 固定为 `0` | `UINT_MAX` |
+| `long` | `LONG_MIN` | `LONG_MAX` |
+| `unsigned long` | 固定为 `0` | `ULONG_MAX` |
+| `long long` | `LLONG_MIN` | `LLONG_MAX` |
+| `unsigned long long` | 固定为 `0` | `ULLONG_MAX` |
+
+其他重要宏：
+
+```cpp
+CHAR_BIT // 一个 C++ 字节中有多少位；标准不强制必须等于 8
+```
+
+普通 `char` 的有符号性由实现决定，因此 `CHAR_MIN` 可能等于 `0`，也可能等于 `SCHAR_MIN`。
+
+### 10. 常见整数值不是 ISO C++11 的固定承诺
+
+在常见的 8 位字节、二进制补码平台上：
+
+| 类型假设 | 常见最小值 | 常见最大值 |
+|---|---:|---:|
+| 8 位 `signed char` | `-128` | `127` |
+| 8 位 `unsigned char` | `0` | `255` |
+| 16 位 `short` | `-32768` | `32767` |
+| 16 位 `unsigned short` | `0` | `65535` |
+| 32 位 `int` | `-2147483648` | `2147483647` |
+| 32 位 `unsigned int` | `0` | `4294967295` |
+| 64 位 `long long` | `-9223372036854775808` | `9223372036854775807` |
+| 64 位 `unsigned long long` | `0` | `18446744073709551615` |
+
+但 ISO C++11 不固定这些类型的精确字节数，也不固定有符号整数必须是二进制补码。尤其是：
+
+- 64 位 Windows 通常仍然使用 32 位 `long`。
+- 许多 64 位 Linux 系统使用 64 位 `long`。
+- `int` 不保证一定为 4 字节。
+
+需要当前实现的真实范围时读取宏或 `std::numeric_limits`，不要把常见值硬编码成标准事实。
+
+### 11. 浮点极限宏：`<cfloat>`
+
+```cpp
+#include <cfloat>
+```
+
+| 类型 | 最小正正规数 | 最大有限值 | `1` 附近间距 |
+|---|---|---|---|
+| `float` | `FLT_MIN` | `FLT_MAX` | `FLT_EPSILON` |
+| `double` | `DBL_MIN` | `DBL_MAX` | `DBL_EPSILON` |
+| `long double` | `LDBL_MIN` | `LDBL_MAX` | `LDBL_EPSILON` |
+
+宏名区分大小写，正确名称是：
+
+```cpp
+FLT_MAX
+DBL_MAX
+```
+
+不是 `flt_max` 或 `dbl_max`。
+
+最重要的区别：
+
+```text
+INT_MIN = int 的最小值，也就是最负的 int
+FLT_MIN = float 的最小正正规值，不是最负的 float
+DBL_MIN = double 的最小正正规值，不是最负的 double
+```
+
+`FLT_MAX` 和 `DBL_MAX` 表示最大有限值，不包含正无穷。是否支持无穷和 NaN，要查询实现属性。
+
+### 12. 常见 IEEE 754 浮点值
+
+下表是常见实现的参考值，不是 ISO C++11 对所有平台的固定要求：
+
+| 宏 | 常见近似值 | 含义 |
+|---|---:|---|
+| `FLT_MIN` | `1.17549435e-38F` | 最小正正规 `float` |
+| `FLT_MAX` | `3.40282347e+38F` | 最大有限 `float` |
+| `FLT_EPSILON` | `1.19209290e-7F` | `1.0F` 与下一个可表示值之差 |
+| `DBL_MIN` | `2.2250738585072014e-308` | 最小正正规 `double` |
+| `DBL_MAX` | `1.7976931348623157e+308` | 最大有限 `double` |
+| `DBL_EPSILON` | `2.2204460492503131e-16` | `1.0` 与下一个可表示值之差 |
+
+在常见对称 IEEE 754 表示中，最负有限 `float` 约为 `-FLT_MAX`，最负有限 `double` 约为 `-DBL_MAX`。通用 C++11 代码应使用 `lowest()` 查询，而不是假定表示必然对称。
+
+若实现支持常见的 IEEE 754 次正规数，则还常见：
+
+```text
+float  denorm_min() ≈ 1.40129846e-45
+double denorm_min() ≈ 4.9406564584124654e-324
+```
+
+`FLT_TRUE_MIN`、`DBL_TRUE_MIN` 等宏不属于 ISO C++11。C++11 应使用 `std::numeric_limits<T>::denorm_min()` 查询相应值。
+
+### 13. 推荐的 C++ 查询方式：`std::numeric_limits`
+
+```cpp
+#include <limits>
+
+int int_minimum = std::numeric_limits<int>::min();
+int int_maximum = std::numeric_limits<int>::max();
+
+float float_smallest_normal =
+    std::numeric_limits<float>::min();
+float float_most_negative =
+    std::numeric_limits<float>::lowest();
+float float_largest =
+    std::numeric_limits<float>::max();
+```
+
+三者含义：
+
+| 函数 | 整数 | 浮点数 |
+|---|---|---|
+| `min()` | 类型最小值；有符号整数为最负值，无符号整数为 `0` | 最小正正规值 |
+| `lowest()` | 类型最小值；有符号整数为最负值，无符号整数为 `0` | 最负有限值 |
+| `max()` | 最大值 | 最大有限值 |
+
+为了让泛型代码对整数和浮点数都取得“最负值”，应使用：
+
+```cpp
+std::numeric_limits<T>::lowest()
+```
+
+而不是统一使用 `min()`。
+
+其他常用属性：
+
+```cpp
+std::numeric_limits<T>::digits          // 整数值位数或浮点有效二进制位数
+std::numeric_limits<T>::digits10        // 可无损表示的十进制位数
+std::numeric_limits<T>::max_digits10    // 浮点值往返文本所需位数
+std::numeric_limits<T>::is_signed       // 是否有符号
+std::numeric_limits<T>::is_integer      // 是否为整数
+std::numeric_limits<T>::epsilon()       // 浮点 1 附近的间距
+std::numeric_limits<T>::denorm_min()    // 支持时的最小正次正规值
+std::numeric_limits<T>::has_infinity    // 是否支持无穷
+std::numeric_limits<T>::infinity()      // 支持时取得正无穷
+std::numeric_limits<T>::has_quiet_NaN   // 是否支持 quiet NaN
+std::numeric_limits<T>::quiet_NaN()     // 支持时取得 quiet NaN
+```
+
+`epsilon()` 不是最小正数，也不是通用的浮点比较误差；它只描述 `1` 附近的表示间距。
+
+### 14. 其他整数类型怎样查询
+
+`bool`、字符类型和库中使用的整数类型也可以交给 `numeric_limits`：
+
+```cpp
+std::numeric_limits<bool>::min();       // false
+std::numeric_limits<bool>::max();       // true
+
+std::numeric_limits<wchar_t>::lowest();
+std::numeric_limits<char16_t>::max();
+std::numeric_limits<char32_t>::max();
+std::numeric_limits<std::size_t>::max();
+std::numeric_limits<std::ptrdiff_t>::lowest();
+```
+
+查询 `std::size_t` 和 `std::ptrdiff_t` 前应包含 `<cstddef>`。
+
+若算法需要恰好 8、16、32 或 64 位整数，可检查 `<cstdint>` 中的 `std::int32_t`、`std::uint32_t` 等精确宽度类型；只有实现确实提供相应精确宽度整数时，这些类型和配套宏才存在。不要把普通 `int` 直接假定为 `std::int32_t`。
+
+### 15. 输出当前平台真实范围
+
+```cpp
+#include <cfloat>
+#include <climits>
+#include <iomanip>
+#include <iostream>
+#include <limits>
+
+int main()
+{
+    std::cout << "INT_MIN = " << INT_MIN << '\n';
+    std::cout << "INT_MAX = " << INT_MAX << '\n';
+    std::cout << "UINT_MAX = " << UINT_MAX << '\n';
+
+    std::cout << std::setprecision(
+        std::numeric_limits<double>::max_digits10);
+
+    std::cout << "FLT_MIN = " << FLT_MIN << '\n';
+    std::cout << "FLT_MAX = " << FLT_MAX << '\n';
+    std::cout << "float lowest = "
+              << std::numeric_limits<float>::lowest() << '\n';
+
+    std::cout << "DBL_MIN = " << DBL_MIN << '\n';
+    std::cout << "DBL_MAX = " << DBL_MAX << '\n';
+    std::cout << "double lowest = "
+              << std::numeric_limits<double>::lowest() << '\n';
+}
+```
+
+### 16. 最终记忆表
+
+```text
+整数：
+MIN = 最负值
+MAX = 最大值
+无符号最小值永远是 0
+
+浮点：
+MIN = 最小正正规值
+lowest() = 最负有限值
+MAX = 最大有限值
+epsilon() = 1 附近的间距
+
+位运算：
+置位 |
+清位 & ~
+翻转 ^
+测试 &
+移位优先用无符号，并检查位数
+```
+
+**一句话记忆：** 整数的 `MIN` 是最负值，浮点的 `MIN` 却是最小正正规值；位掩码优先使用无符号类型，并始终检查整数提升、移位数量和运算符优先级。
