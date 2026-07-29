@@ -3904,3 +3904,1060 @@ void inspect(int (&a)[2][3]);
 ```
 
 **一句话记忆：** 真数组遇到 `sizeof` 不会退化，所以得到整个数组大小；函数形参 `T array[]` 早已被调整成 `T*`，所以函数体内只能得到指针大小。
+
+## W024：`sizeof`、`strlen`、C 字符串与 `std::string`
+
+**问题：** `sizeof` 和 `strlen` 有什么本质区别？什么是 C 字符串？它与 C++11 的 `std::string` 在表示、长度、所有权、性能和接口使用上有什么区别？
+
+**核心答案：**
+
+- `sizeof` 查询静态类型对应的对象表示大小，单位是 C++ 字节；表达式操作数不被求值，结果类型为 `std::size_t`。
+- `std::strlen` 接收 `const char*`，从该位置开始逐字节寻找第一个 `'\0'`，返回它之前的字符数量，不包含终止符。
+- C 字符串不是独立类型，而是“以 `'\0'` 终止的连续 `char` 序列”这一内存约定。
+- `std::string` 是拥有长度和资源管理能力的标准库类，保存的字符数量由 `size()` 记录，可以包含内嵌 `'\0'`。
+- 日常 C++11 业务字符串优先使用 `std::string`；只有 C ABI、固定缓冲区或外部协议边界才通常需要直接处理 C 字符串。
+
+### 1. 一张表先看懂全部区别
+
+```cpp
+#include <cstring>
+#include <string>
+
+char first[] = "abc";
+char second[10] = "abc";
+const char* pointer = "abc";
+char raw[3] = {'a', 'b', 'c'};
+std::string object = "abc";
+std::string embedded("a\0b", 3);
+```
+
+| 表达式 | 结果或含义 |
+|---|---|
+| `sizeof("abc")` | `4`，字符串字面量类型为 `const char[4]` |
+| `std::strlen("abc")` | `3`，不计算末尾 `'\0'` |
+| `sizeof(first)` | `4`，整个数组大小 |
+| `std::strlen(first)` | `3` |
+| `sizeof(second)` | `10`，数组容量对应的总字节数 |
+| `std::strlen(second)` | `3`，只扫描到第一个 `'\0'` |
+| `sizeof(pointer)` | 指针对象自身大小 |
+| `std::strlen(pointer)` | `3`，沿指针扫描字符串内容 |
+| `sizeof(raw)` | `3` |
+| `std::strlen(raw)` | 未定义行为，因为数组中没有 `'\0'` |
+| `sizeof(object)` | `std::string` 管理对象自身大小 |
+| `object.size()` | `3` |
+| `embedded.size()` | `3`，包括中间的 `'\0'` |
+| `std::strlen(embedded.c_str())` | `1`，扫描在内嵌 `'\0'` 处停止 |
+
+### 2. `sizeof` 到底查询什么
+
+```cpp
+sizeof(expression);
+sizeof(Type);
+```
+
+它返回对象表示占用的 C++ 字节数：
+
+```cpp
+int values[10] = {};
+
+std::size_t array_bytes = sizeof(values);
+std::size_t element_bytes = sizeof(values[0]);
+```
+
+数组满足：
+
+```cpp
+sizeof(values) == 10 * sizeof(int);
+```
+
+`sizeof` 根据表达式的类型工作，不读取字符串内容，也不会沿指针寻找结束位置。
+
+不要把规则简化成“数组只在 `sizeof` 中不转换”。对整个数组使用一元 `&`、使用 `decltype(array)`、`typeid(array)` 或绑定到数组引用等语境，也会保留数组类型；数组到指针是按具体上下文发生的标准转换。
+
+### 3. `sizeof` 的操作数不求值
+
+```cpp
+int value = 1;
+
+sizeof(value = 9);
+
+// value 仍然为 1
+```
+
+甚至：
+
+```cpp
+int* pointer = nullptr;
+
+sizeof(*pointer); // 合法：不真正解引用 pointer
+```
+
+前提是 `*pointer` 所形成的类型允许应用 `sizeof`。这里查询的是 `int` 的大小，没有运行期空指针解引用。
+
+### 3.1 `sizeof` 的类型限制与静态类型
+
+不能直接对以下对象或类型使用标准 `sizeof`：
+
+- `void`。
+- 函数类型，但函数指针可以。
+- 尚不完整的类型。
+- 位域表达式。
+
+类对象的 `sizeof` 包含实现为对齐加入的填充字节。通过引用使用时，结果是所引用类型的大小；对于多态对象，`sizeof` 仍按表达式的静态类型工作，不会在运行期根据最派生类型改变。
+
+### 4. `sizeof` 返回的“字节”不保证是 8 位
+
+C++ 保证：
+
+```cpp
+sizeof(char) == 1;
+sizeof(signed char) == 1;
+sizeof(unsigned char) == 1;
+```
+
+但一个 C++ 字节包含多少位由 `<climits>` 中的：
+
+```cpp
+CHAR_BIT
+```
+
+决定。常见平台为 8，但 ISO C++11 不强制所有平台都等于 8。
+
+### 5. `sizeof` 不能告诉你动态分配长度
+
+```cpp
+char* buffer = new char[100];
+
+sizeof(buffer); // 只是 char* 的大小
+
+delete[] buffer;
+```
+
+指针只保存地址，不自动携带“后面有 100 个元素”的信息。相同问题也适用于：
+
+```cpp
+std::vector<int> values(100);
+
+sizeof(values); // vector 管理对象大小，不是 100 个 int 的总大小
+```
+
+容器元素数量应使用：
+
+```cpp
+values.size();
+```
+
+### 6. `sizeof(std::string)` 为什么不是字符串长度
+
+```cpp
+std::string text = "hello";
+
+sizeof(text); // std::string 对象自身大小
+text.size();  // 5
+```
+
+`std::string` 对象通常包含指针、长度、容量或小字符串优化所需的内部状态，但具体布局由实现决定。`sizeof(text)` 不随文本长度变化：
+
+```cpp
+std::string short_text = "a";
+std::string long_text(10000, 'x');
+
+sizeof(short_text) == sizeof(long_text); // 同一类型的对象大小相同
+```
+
+长字符串使用的动态存储不包含在 `sizeof(std::string)` 的结果中。小字符串优化也只是常见实现策略，不是 C++11 必须采用的保证。
+
+### 7. `strlen` 的函数模型
+
+```cpp
+#include <cstring>
+
+std::size_t length = std::strlen(pointer);
+```
+
+可以概念性理解为：
+
+```cpp
+std::size_t string_length(const char* text)
+{
+    std::size_t length = 0;
+
+    while (text[length] != '\0') {
+        ++length;
+    }
+
+    return length;
+}
+```
+
+真实标准库实现通常会进行优化，但语义上必须找到第一个 `'\0'`。
+
+ISO C++11 的 C 字符串条款没有为 `strlen` 明写渐近复杂度保证，因此严格表述是“其语义要求确定第一个终止零的位置”；典型实现进行线性扫描，编译器也可能对已知内容进行内建优化或常量折叠。
+
+### 8. `strlen` 的三个严格前提
+
+调用：
+
+```cpp
+std::strlen(text);
+```
+
+要求：
+
+1. `text` 不是空指针。
+2. `text` 指向仍然存活、可读取的字符存储。
+3. 从 `text` 开始，在可读取对象边界内能够遇到 `'\0'`。
+
+错误示例：
+
+```cpp
+std::strlen(nullptr); // 未定义行为
+
+char raw[3] = {'a', 'b', 'c'};
+std::strlen(raw);     // 未定义行为：会继续越界寻找 '\0'
+```
+
+`strlen` 没有容量参数，因此无法自己阻止越界扫描。
+
+### 9. `strlen` 不包含终止符
+
+```cpp
+char text[] = "abc";
+```
+
+内存为：
+
+```text
+索引： 0    1    2    3
+内容：'a'  'b'  'c' '\0'
+```
+
+因此：
+
+```cpp
+sizeof(text)       == 4;
+std::strlen(text)  == 3;
+```
+
+内嵌零也遵循“第一个零停止”：
+
+```cpp
+sizeof("\0")          == 2; // 显式零 + 自动附加的终止零
+std::strlen("\0")     == 0;
+
+sizeof("a\0b")        == 4; // 'a'、零、'b'、自动终止零
+std::strlen("a\0b")   == 1;
+```
+
+复制完整 C 字符串所需容量至少为：
+
+```cpp
+std::strlen(text) + 1
+```
+
+多出的 `1` 用来保存终止空字符。
+
+### 10. `'\0'`、`'0'` 和 `nullptr` 完全不同
+
+```cpp
+'\0'      // 数值为 0 的字符，用作 C 字符串终止符
+'0'       // 数字字符 0，字符编码值通常不是 0
+nullptr   // 空指针值
+```
+
+例如：
+
+```cpp
+char text[] = {'A', '0', 'B', '\0'};
+
+std::strlen(text) == 3;
+```
+
+中间的 `'0'` 不是字符串终止符。
+
+### 11. C 字符串不是一个独立类型
+
+下面两个对象类型都是 `char[3]`：
+
+```cpp
+char valid[3] = {'A', 'B', '\0'};
+char invalid[3] = {'A', 'B', 'C'};
+```
+
+但只有 `valid` 表示一个合法 C 字符串。是否为 C 字符串取决于：
+
+```text
+可访问范围内是否存在终止字符 '\0'
+```
+
+而不是仅由 `char*` 或 `char[]` 类型决定。
+
+### 12. 字符串字面量与可修改字符数组
+
+```cpp
+const char* literal_pointer = "abc";
+char modifiable[] = "abc";
+```
+
+`"abc"` 的类型是：
+
+```cpp
+const char[4]
+```
+
+字符串字面量具有静态存储期，不能修改：
+
+```cpp
+// literal_pointer[0] = 'A'; // 错误
+```
+
+`modifiable` 是独立的字符数组副本，可以修改：
+
+```cpp
+modifiable[0] = 'A'; // "Abc"
+```
+
+### 12.1 C 字符串指针不表达所有权
+
+```cpp
+const char* pointer = "abc";
+```
+
+这个指针只指向字符串字面量，不拥有它。普通 `char*` 或 `const char*` 本身也不能说明：
+
+- 数据由谁分配。
+- 应该由谁释放。
+- 可写还是只读之外的容量是多少。
+- 指针能够使用多久。
+
+返回局部数组地址会形成悬空指针：
+
+```cpp
+const char* bad()
+{
+    char local[] = "abc";
+    return local; // 错误：函数返回后 local 销毁
+}
+```
+
+手工动态分配还要求正确配对：
+
+```cpp
+char* text = new char[capacity];
+// ...
+delete[] text;
+```
+
+日常 C++ 字符串优先用 `std::string`，让对象明确拥有并自动释放资源。
+
+### 13. C 字符串的长度与容量必须分开
+
+```cpp
+char buffer[10] = "abc";
+```
+
+这里：
+
+```text
+数组容量：10 个 char
+当前字符串长度：3
+终止符占用：1
+还能安全追加的普通字符数量：6
+```
+
+任何写操作必须保持：
+
+```text
+新长度 + 1 <= 容量
+```
+
+指针参数本身无法告诉函数容量：
+
+```cpp
+void write_text(char* destination);
+```
+
+更合理的接口应同时传入容量：
+
+```cpp
+void write_text(char* destination, std::size_t capacity);
+```
+
+### 14. 常见 C 字符串函数
+
+```cpp
+#include <cstring>
+```
+
+| 函数 | 作用 | 关键前提 |
+|---|---|---|
+| `strlen(s)` | 求第一个 `'\0'` 前的长度 | `s` 必须指向有效 C 字符串 |
+| `strcmp(a, b)` | 按字典序比较 | 两者都必须有效 |
+| `strchr(s, c)` | 查找字符 | `s` 必须有效 |
+| `strstr(s, sub)` | 查找子串 | 两者都必须有效 |
+| `strcpy(dst, src)` | 连同 `'\0'` 复制 | 目标容量足够且区域不重叠 |
+| `strcat(dst, src)` | 追加字符串 | 目标原本有效且总容量足够 |
+| `strncpy(dst, src, n)` | 最多按规则处理 `n` 个位置 | 不保证一定写入 `'\0'` |
+| `memcpy(dst, src, n)` | 复制恰好 `n` 个字节 | 区域不能重叠 |
+| `memmove(dst, src, n)` | 复制恰好 `n` 个字节 | 允许区域重叠 |
+
+### 15. `strcmp` 的结果不是固定的 `-1/0/1`
+
+```cpp
+int result = std::strcmp(first, second);
+```
+
+只应判断：
+
+```cpp
+result < 0;  // first 在 second 前
+result == 0; // 内容相等
+result > 0;  // first 在 second 后
+```
+
+不能要求不同实现一定返回恰好 `-1` 或 `1`。
+
+### 16. C 字符串不能用 `==` 比较内容
+
+```cpp
+char first[] = "abc";
+char second[] = "abc";
+
+bool same = first == second;
+```
+
+数组在比较中转换为指针，因此比较的是两个地址，不是内容。
+
+内容比较要写：
+
+```cpp
+bool same =
+    std::strcmp(first, second) == 0;
+```
+
+而 `std::string` 可以直接比较内容：
+
+```cpp
+std::string first = "abc";
+std::string second = "abc";
+
+bool same = first == second; // true
+```
+
+### 17. `strcpy` 和 `strcat` 的容量风险
+
+```cpp
+char destination[4];
+
+std::strcpy(destination, "abcdef"); // 越界，未定义行为
+```
+
+`strcpy` 不知道目标容量。调用者必须保证：
+
+```text
+destination capacity >= strlen(source) + 1
+```
+
+`strcat` 需要保证：
+
+```text
+destination capacity
+>= strlen(destination) + strlen(source) + 1
+```
+
+目标越界不是“字符串被截断”，而是未定义行为。
+
+### 18. `strncpy` 不是自动安全版 `strcpy`
+
+```cpp
+char destination[4];
+
+std::strncpy(destination, "abcdef", sizeof(destination));
+```
+
+当源字符串长度大于或等于 `n` 时，`strncpy` 可能不会写入末尾 `'\0'`。随后调用：
+
+```cpp
+std::strlen(destination);
+```
+
+可能越界扫描。
+
+如果源字符串较短，`strncpy` 还会用零填充剩余位置，语义并不只是“最多复制若干字符”。不要因为函数名带 `n` 就默认它适合所有安全复制场景。
+
+### 19. `memcpy` 与字符串复制不同
+
+```cpp
+char source[] = {'A', '\0', 'B'};
+char destination[3];
+
+std::memcpy(destination, source, 3);
+```
+
+`memcpy` 会复制全部三个字节，包括中间的零和后面的 `'B'`。它不寻找 `'\0'`，也不会自动追加终止符。
+
+适合：
+
+- 已知长度的字节块。
+- 对象表示复制允许的场景。
+- 可能包含零的二进制数据。
+
+若源和目标范围重叠，应使用 `memmove`。
+
+### 20. 重复调用 `strlen` 可能变成平方复杂度
+
+不推荐：
+
+```cpp
+for (std::size_t index = 0;
+     index < std::strlen(text);
+     ++index) {
+}
+```
+
+如果每轮都重新从头扫描，长度为 `N` 的字符串可能产生近似 `O(N²)` 工作量。
+
+改为：
+
+```cpp
+const std::size_t length = std::strlen(text);
+
+for (std::size_t index = 0;
+     index < length;
+     ++index) {
+}
+```
+
+`std::string::size()` 在 C++11 中是常数时间，因此普通循环可以直接使用，但保存循环终点仍可能改善表达意图。
+
+### 21. `std::string` 到底是什么
+
+```cpp
+#include <string>
+
+std::string text = "hello";
+```
+
+`std::string` 是：
+
+```cpp
+std::basic_string<char>
+```
+
+它拥有一段数量可变的连续 `char` 序列，并负责所需存储的分配与释放。对象销毁时资源自动释放，体现 RAII。
+
+与 `char*` 不同，`std::string` 在语义上同时管理：
+
+- 字符序列。
+- 当前字符数量。
+- 可用容量。
+- 动态资源生命周期。
+
+### 22. `size()` 与 `length()` 完全等价
+
+```cpp
+std::string text = "hello";
+
+text.size();   // 5
+text.length(); // 5
+```
+
+C++11 规定：
+
+```cpp
+text.length() == text.size();
+```
+
+两者都是常数时间。通常容器风格代码使用 `size()`，强调文本语义时也有人使用 `length()`。
+
+### 23. `size`、`capacity` 与 `sizeof`
+
+```cpp
+std::string text = "hello";
+```
+
+三者分别表示：
+
+```text
+text.size()      当前保存的 char 数量
+text.capacity()  不重新分配时能够容纳的字符数量
+sizeof(text)     std::string 管理对象自身的字节数
+```
+
+始终满足：
+
+```cpp
+text.size() <= text.capacity();
+```
+
+但不能假定：
+
+```cpp
+text.capacity() == text.size();
+```
+
+实现通常会预留额外容量，以减少连续追加时的重新分配。
+
+### 24. `reserve`、`resize` 和 `shrink_to_fit`
+
+```cpp
+std::string text;
+
+text.reserve(100); // 计划容纳至少 100 个字符
+text.resize(20);   // 实际 size 变为 20
+```
+
+区别：
+
+- `reserve(n)` 主要调整容量，不把逻辑长度直接改成 `n`。
+- `resize(n)` 改变实际字符数量。
+- 扩大 `resize` 时，新位置以指定字符或 `char()` 填充。
+- `shrink_to_fit()` 只是非强制请求，实现可以不缩小容量。
+
+### 25. `std::string` 可以包含内嵌 `'\0'`
+
+```cpp
+std::string text("A\0B", 3);
+
+text.size() == 3;
+text[0] == 'A';
+text[1] == '\0';
+text[2] == 'B';
+```
+
+因为 `std::string` 记录明确长度，不依赖第一个零判断结束位置。
+
+但是：
+
+```cpp
+std::strlen(text.c_str()) == 1;
+```
+
+C API 只看到第一个 `'\0'` 前面的 `"A"`。
+
+### 26. 两种构造函数对内嵌零的处理不同
+
+```cpp
+const char data[] = {'A', '\0', 'B'};
+
+std::string first(data);    // 使用 C 字符串规则，size 为 1
+std::string second(data, 3);// 明确复制 3 个字符，size 为 3
+```
+
+只传 `const char*` 的构造函数要求有效 C 字符串，并在第一个 `'\0'` 停止。传入指针和长度的构造函数复制准确数量的字符。
+
+永远不要传空指针：
+
+```cpp
+const char* pointer = nullptr;
+
+// std::string text(pointer); // 不满足前置条件
+```
+
+### 27. 重复字符构造的括号陷阱
+
+```cpp
+std::string first(5, 'x'); // "xxxxx"
+```
+
+C++11 还存在 `initializer_list` 构造函数，因此：
+
+```cpp
+std::string second{5, 'x'};
+```
+
+可能选择字符列表含义，形成两个字符，而不是五个 `'x'`。需要“数量 + 字符”构造时使用圆括号。
+
+### 28. 复制与移动语义
+
+复制具有值语义：
+
+```cpp
+std::string first = "abc";
+std::string second = first;
+
+second[0] = 'A';
+
+// first 仍为 "abc"
+// second 为 "Abc"
+```
+
+C++11 还支持移动：
+
+```cpp
+std::string target = std::move(source);
+```
+
+移动后 `source` 仍是有效对象，但值处于未指定状态；可以销毁、重新赋值或调用满足当前状态前提的操作，不能假定它一定为空。
+
+### 29. 元素访问
+
+```cpp
+std::string text = "abc";
+
+text[0];    // 'a'
+text.at(0); // 'a'
+```
+
+区别：
+
+- `operator[]` 不进行普通越界异常检查，基础代码只使用 `index < size()` 的索引。
+- `at(index)` 在 `index >= size()` 时抛出 `std::out_of_range`。
+- `front()` 和 `back()` 要求字符串非空。
+
+C++11 中读取 `text[text.size()]` 会得到一个零值字符，但该位置不是普通字符串元素，修改它会产生未定义行为；`index > size()` 更不允许。基础代码坚持只访问 `[0, size())`。
+
+```cpp
+if (!text.empty()) {
+    char first = text.front();
+    char last = text.back();
+}
+```
+
+### 30. 常见修改操作
+
+```cpp
+std::string text = "abc";
+
+text += "def";
+text.push_back('!');
+text.append("XYZ");
+text.insert(0, ">");
+text.erase(0, 1);
+text.replace(0, 3, "ABC");
+text.clear();
+```
+
+`std::string` 会管理容量和终止字符，调用者不需要手工计算 `strlen + 1` 后分配。
+
+### 31. 字符串拼接的常见错误
+
+错误：
+
+```cpp
+// "hello" + "world"
+```
+
+两个操作数都是字符数组，转换后都是指针，C++ 没有两个指针相加的字符串拼接。
+
+正确：
+
+```cpp
+std::string result =
+    std::string("hello") + "world";
+```
+
+或者：
+
+```cpp
+std::string result = "hello";
+result += "world";
+```
+
+循环中大量拼接时可先估算并 `reserve`，减少重新分配：
+
+```cpp
+std::string result;
+result.reserve(expected_size);
+```
+
+### 32. 查找与子串
+
+```cpp
+std::string text = "hello world";
+
+std::size_t position = text.find("world");
+
+if (position != std::string::npos) {
+    std::string part = text.substr(position, 5);
+}
+```
+
+`find` 未找到时返回：
+
+```cpp
+std::string::npos
+```
+
+它不是普通的有效下标。
+
+### 33. `std::string` 比较的是内容
+
+```cpp
+std::string first = "abc";
+std::string second = "abc";
+
+first == second; // true
+first < second;  // 按字典序比较
+```
+
+比较会考虑明确的字符串长度和所有保存字符，包括内嵌 `'\0'`。
+
+### 34. C++11 保证连续存储
+
+`std::string` 的字符在 C++11 中连续存放，因此可以与需要只读连续字符的接口交互。
+
+```cpp
+const char* pointer = text.c_str();
+```
+
+`c_str()` 返回以零终止的字符序列指针：
+
+```cpp
+pointer[text.size()] == '\0';
+```
+
+C++11 中 `c_str()` 与 `data()` 都具有末尾零边界保证，并且都只返回只读指针：
+
+```cpp
+text.c_str(); // const char*
+text.data();  // const char*
+```
+
+两者都不能通过返回指针修改字符。C++17 才为非 `const std::string` 增加可修改的 `data()` 重载。
+
+流输出 `std::string` 使用对象记录的 `size()`，不会像 C 字符串函数那样在内嵌 `'\0'` 处截断：
+
+```cpp
+std::string text("A\0B", 3);
+std::cout << text; // 向流写出三个 char；中间零通常没有可见字形
+```
+
+### 35. `c_str()` 指针何时失效
+
+```cpp
+const char* pointer = text.c_str();
+
+text += "more";
+
+// 不要继续假定 pointer 有效
+```
+
+会修改字符串、改变容量或把字符串传给接收非 `const std::string&` 的操作，都可能使之前取得的：
+
+- `c_str()` 指针。
+- `data()` 指针。
+- 元素指针和引用。
+- 迭代器。
+
+失效。
+
+安全基础规则：
+
+```text
+只在调用 C 接口前临时取得 c_str()；
+字符串发生任何可能修改后重新取得。
+```
+
+### 36. 只读 C 接口
+
+```cpp
+void legacy_print(const char* text);
+
+std::string value = "hello";
+legacy_print(value.c_str());
+```
+
+如果 C 函数只在调用期间读取字符串，这种写法合适。
+
+如果 C 函数会保存该指针，则必须额外保证：
+
+- `std::string` 对象活得足够久。
+- 保存期间字符串不发生使指针失效的修改。
+- 对方不会通过指针修改字符。
+
+### 37. 可写 C 接口
+
+C++11 的 `c_str()` 和 `data()` 返回 `const char*`，不能传给需要写入的 `char*` 接口。
+
+稳妥做法是准备独立缓冲区：
+
+```cpp
+#include <vector>
+
+std::vector<char> buffer(
+    text.begin(),
+    text.end());
+
+buffer.push_back('\0');
+
+legacy_modify(buffer.data(), buffer.size());
+```
+
+修改后若接口保证存在终止符，可重新构造：
+
+```cpp
+std::string changed(buffer.data());
+```
+
+如果接口提供实际长度，优先使用长度构造：
+
+```cpp
+std::string changed(
+    buffer.data(),
+    actual_length);
+```
+
+对于确实需要原地写入的 C API，非空 `std::string` 的 `&text[0]` 在 C++11 中可以提供可写的连续字符区，但必须先把 `size()` 扩大到接口允许写入的全部槽位：
+
+```cpp
+const std::size_t buffer_size = 256;
+
+std::string text;
+text.resize(buffer_size); // 先形成 buffer_size 个实际字符位置
+
+std::size_t actual_length =
+    legacy_write(&text[0], text.size());
+
+text.resize(actual_length);
+```
+
+不能因为 `capacity()` 足够就写到 `size()` 以外；如果 C API 还要写终止 `'\0'`，该槽位也必须包含在预先 `resize` 出来的区域内。由于接口契约很容易混淆，独立 `std::vector<char>` 缓冲区通常更稳妥。
+
+### 38. 输入一个单词与输入整行
+
+```cpp
+std::string text;
+
+std::cin >> text;
+```
+
+通常跳过开头空白，并读取到下一个空白为止。
+
+读取整行：
+
+```cpp
+std::getline(std::cin, text);
+```
+
+它读取到换行分隔符并丢弃该分隔符。
+
+混合使用时：
+
+```cpp
+int number = 0;
+std::cin >> number;
+
+std::cin.ignore(
+    std::numeric_limits<std::streamsize>::max(),
+    '\n');
+
+std::getline(std::cin, text);
+```
+
+否则前一次格式化输入留下的换行可能让 `getline` 立即得到空行。
+
+### 39. 数字与字符串转换
+
+C++11 提供：
+
+```cpp
+int number = std::stoi("123");
+double value = std::stod("3.14");
+std::string text = std::to_string(42);
+```
+
+`stoi` 等函数可能抛出：
+
+- `std::invalid_argument`：没有可解析转换。
+- `std::out_of_range`：结果超出目标范围。
+
+若需要确认整个字符串都被消费，可使用位置参数：
+
+```cpp
+std::size_t used = 0;
+int value = std::stoi(text, &used);
+
+bool consumed_all = used == text.size();
+```
+
+### 40. Unicode：长度不等于用户看到的字符数
+
+`strlen` 和 `std::string::size()` 对 `std::string` 都按 `char` 单元计数，不理解 Unicode 字符或用户感知字符。
+
+```cpp
+std::string text = u8"中文";
+```
+
+UTF-8 中这两个汉字通常占 6 个字节，所以：
+
+```cpp
+text.size() == 6;
+```
+
+但用户看到的是两个汉字。一个 Unicode 字符还可能由多个码点组成，因此：
+
+```text
+字节数 ≠ Unicode 码点数 ≠ 用户感知字符数
+```
+
+按下标访问 UTF-8 `std::string` 可能只取得一个编码字节。
+
+### 41. C 字符串、`std::string` 与二进制数据怎样选择
+
+| 场景 | 推荐表示 |
+|---|---|
+| 普通 C++11 文本处理 | `std::string` |
+| 只读函数参数，不需要保存 | `const std::string&` |
+| C ABI 的只读字符串参数 | `string.c_str()` |
+| C ABI 的可写缓冲区 | `std::vector<char>` 或明确的字符数组和容量 |
+| 固定容量嵌入式缓冲区 | `char[N]`，同时严格跟踪长度与容量 |
+| 任意二进制字节 | `std::vector<unsigned char>` 等明确字节容器 |
+| 指针指向数据但长度单独提供 | `const char*` 加 `std::size_t` |
+
+C++17 才提供标准 `std::string_view`；它不属于 C++11。
+
+### 42. 容易混入 C++11 的后续版本特性
+
+| 特性 | 标准版本 |
+|---|---|
+| `std::string` 移动语义、连续存储保证、`stoi`、`to_string` | C++11 |
+| `"text"s` 字符串字面量后缀 | C++14 |
+| `std::string_view` | C++17 |
+| 非 `const std::string::data()` 返回可写指针 | C++17 |
+| `starts_with`、`ends_with` | C++20 |
+| `contains`、`resize_and_overwrite` | C++23 |
+
+### 43. 最常见的错误清单
+
+```text
+1. 用 sizeof(pointer) 猜动态数组或字符串长度。
+2. 对没有 '\0' 的字符数组调用 strlen。
+3. 对 nullptr 调用 strlen 或构造 std::string。
+4. 忘记 C 字符串容量必须包含终止符。
+5. 使用 strcpy/strcat 却不检查目标容量。
+6. 认为 strncpy 永远会写入 '\0'。
+7. 使用 == 比较两个 C 字符串内容。
+8. 把 sizeof(std::string) 当成字符数量。
+9. 把 std::string::capacity() 当成 size()。
+10. 认为 std::string 不能包含 '\0'。
+11. 将 c_str() 指针保存到字符串修改之后。
+12. 在 C++11 中通过 data() 或 c_str() 修改字符串。
+13. 把 UTF-8 字节数当成用户字符数。
+14. 在循环条件中反复调用 strlen，造成重复扫描。
+```
+
+### 44. 最终决策流程
+
+看到“字符串长度”时依次问：
+
+1. 当前对象是真数组、指针还是 `std::string`？
+2. 需要的是对象占用字节数、数组容量，还是逻辑文本长度？
+3. 如果使用 `strlen`，是否保证在边界内存在 `'\0'`？
+4. 字符序列是否可能包含内嵌零？
+5. 是否需要拥有数据，还是只借用指针？
+6. 是否会调用可能保存或修改缓冲区的 C 接口？
+7. 所谓“字符数”究竟是字节、编码单元、码点还是用户感知字符？
+
+对应选择：
+
+```text
+对象表示大小       → sizeof
+真数组元素数       → sizeof(array) / sizeof(array[0])
+C 字符串首个零前长度 → strlen
+std::string 字符单元数 → size()/length()
+动态缓冲区容量       → 容器 capacity 或显式保存的容量
+Unicode 用户字符数   → 需要专门的 Unicode 处理
+```
+
+**一句话记忆：** `sizeof` 看类型和对象表示，`strlen` 沿指针扫描到第一个 `'\0'`，`std::string::size()` 读取对象保存的明确长度；C 字符串靠终止符约定，`std::string` 靠长度与 RAII 管理字符序列。
