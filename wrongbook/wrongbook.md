@@ -1133,6 +1133,60 @@ decltype((value)) alias = value; // int&
 
 这是 `decltype` 最重要的易错点之一。
 
+### 4.1 `decltype((value))` 得到的是变量本身吗？
+
+不是。`decltype` 的结果始终是一个类型，不会返回对象、变量或运行期数值。
+
+```cpp
+int value = 1;
+
+decltype(value) copy = 2;
+decltype((value)) alias = value;
+```
+
+等价理解：
+
+```cpp
+int copy = 2;
+int& alias = value;
+```
+
+这里：
+
+- `value` 是一个变量或对象。
+- `int` 是 `value` 的声明类型。
+- 表达式 `value` 是左值。
+- `decltype(value)` 使用名字特殊规则，结果为 `int`。
+- `decltype((value))` 使用一般表达式规则，结果为 `int&`。
+
+所以准确说法不是“`decltype((value))` 的类型是 `value` 变量”，而是：
+
+> `(value)` 是一个类型为 `int` 的左值表达式，因此 `decltype((value))` 得到左值引用类型 `int&`。
+
+得到引用类型后，用它声明的变量可以成为 `value` 的别名：
+
+```cpp
+alias = 10; // 实际修改 value
+```
+
+如果原变量是常量：
+
+```cpp
+const int value = 1;
+
+decltype(value) copy = 2;          // const int
+decltype((value)) alias = value;   // const int&
+```
+
+如果变量本身声明为右值引用，额外括号仍会体现“有名字的表达式是左值”：
+
+```cpp
+int&& reference = 3;
+
+decltype(reference) a = 4;          // int&&：名字特殊规则
+decltype((reference)) b = reference; // int&：一般表达式规则
+```
+
 ### 5. 操作数通常不执行
 
 ```cpp
