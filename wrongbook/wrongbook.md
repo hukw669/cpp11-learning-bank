@@ -2082,3 +2082,351 @@ public:
 这里的 `const` 限定成员函数对当前对象的访问，表示不能通过该成员函数修改对象的普通非 `mutable` 成员。它不是在限定返回类型 `int`。
 
 **一句话记忆：** `const int` 与 `int const` 相同；遇到 `*` 时，左侧 `const` 通常限制所指对象，右侧 `const` 限制指针本身；复杂声明从变量名向外读。
+
+## W019：C++11 的 `constexpr` 详解
+
+**问题：** `constexpr` 是什么？它与 `const`、编译期计算、函数和构造函数分别有什么关系？
+
+**核心答案：** `constexpr` 表示“满足常量表达式规则”。它用于对象时，要求初始化器能够形成常量表达式，并使对象本身成为 `const`；用于函数或构造函数时，表示该函数在满足条件的调用中可以参与常量表达式计算。`constexpr` 函数并不是每次调用都必须在编译期执行。
+
+### 1. 为什么需要 `constexpr`
+
+C++ 的某些位置要求值在翻译程序时就能确定，例如：
+
+```cpp
+constexpr int length = 8;
+
+int values[length];               // 内置数组长度
+static_assert(length > 0, "");    // 编译期断言
+
+enum { buffer_size = length };    // 枚举常量
+
+template<int N>
+struct Buffer {
+    int data[N];
+};
+
+Buffer<length> buffer;            // 非类型模板实参
+```
+
+`case` 标签也要求整数常量表达式：
+
+```cpp
+switch (length) {
+case 8:
+    break;
+}
+```
+
+`constexpr` 让程序员明确表达“这个值必须满足常量表达式要求”，并让编译器在不满足时直接诊断。
+
+### 2. `constexpr` 变量
+
+```cpp
+constexpr int count = 6;
+```
+
+这同时表示：
+
+1. `count` 必须初始化。
+2. 初始化器必须满足常量表达式规则。
+3. `count` 是 `const int`，之后不能修改。
+4. `count` 的类型必须是字面类型。
+
+所以下面不合法：
+
+```cpp
+// constexpr int missing; // 错误：没有初始化器
+// count = 7;              // 错误：constexpr 对象是 const
+```
+
+“字面类型”是能够参与常量表达式构造的一类类型。整数、浮点数、指针等标量类型属于字面类型；符合额外条件并具有合适 `constexpr` 构造函数的类也可以是字面类型。
+
+### 3. `const` 与 `constexpr` 的区别
+
+```cpp
+int read_value();
+
+const int a = read_value();        // 可以：a 只读，但值可在运行期取得
+// constexpr int b = read_value(); // 错误：普通函数调用不是常量表达式
+
+const int c = 5;                   // c 也可能用于整数常量表达式
+constexpr int d = 5;               // 明确要求初始化满足常量表达式规则
+```
+
+两者的重点不同：
+
+| 写法 | 重点 |
+|---|---|
+| `const T object` | 通过该对象不能修改值 |
+| `constexpr T object` | 初始化必须是常量表达式，而且对象隐含为 `const` |
+
+因此：
+
+```cpp
+constexpr const int value = 3;
+```
+
+合法，但第二个 `const` 是重复表达；通常写成：
+
+```cpp
+constexpr int value = 3;
+```
+
+也不能反过来说“`const` 一定不是编译期常量”。像 `const int c = 5;` 这样的对象也可能满足特定常量表达式规则；只是 `const` 本身没有普遍承诺初始化器一定是常量表达式。
+
+### 4. `constexpr` 函数：可以编译期计算，不是只能编译期调用
+
+```cpp
+constexpr int square(int number)
+{
+    return number * number;
+}
+
+constexpr int first = square(4); // 常量表达式，first 为 16
+
+int runtime_input();
+int n = runtime_input();
+int second = square(n);          // 合法：这里可以作为普通运行期函数调用
+```
+
+`square(4)` 的实参是常量表达式，而且函数体符合规则，所以它可以形成常量表达式。`square(n)` 的 `n` 在运行期取得，因此这次调用不是常量表达式，但调用本身仍然合法。
+
+最准确的记法是：
+
+```text
+constexpr 函数 = 有机会用于编译期常量表达式的函数
+constexpr 变量的初始化 = 必须成功形成常量表达式
+```
+
+即使没有写 `constexpr`，优化器也可能把普通函数调用折叠为常数；那是优化行为，不是语言接口作出的常量表达式保证。
+
+### 5. 严格 C++11 对 `constexpr` 函数体的限制
+
+C++11 中，普通 `constexpr` 函数必须具有字面返回类型和字面参数类型，不能是虚函数；函数体基本上只能包含恰好一个 `return`，以及少量不产生运行步骤的声明。
+
+条件逻辑通常要写进条件运算符：
+
+```cpp
+constexpr int absolute(int number)
+{
+    return number < 0 ? -number : number;
+}
+```
+
+递归也可以表达重复计算：
+
+```cpp
+constexpr unsigned factorial(unsigned number)
+{
+    return number < 2 ? 1 : number * factorial(number - 1);
+}
+
+static_assert(factorial(5) == 120, "");
+```
+
+下面这种多语句、局部变量和循环形式不符合 C++11 的 `constexpr` 函数体规则：
+
+```cpp
+// 不属于合法的 C++11 constexpr 函数
+/*
+constexpr int sum_to(int number)
+{
+    int sum = 0;
+    for (int i = 1; i <= number; ++i) {
+        sum += i;
+    }
+    return sum;
+}
+*/
+```
+
+C++14 放宽了 `constexpr` 函数体规则，所以网上能编译的循环写法不一定属于 C++11。即便采用递归，编译器对常量求值的递归深度和资源仍有实现限制。
+
+### 6. 并不是写了 `constexpr` 就一定能用于每次常量求值
+
+```cpp
+constexpr int divide(int left, int right)
+{
+    return left / right;
+}
+
+constexpr int good = divide(8, 2);
+// constexpr int bad = divide(8, 0); // 错误：该次求值会除以零
+```
+
+函数声明符合 `constexpr` 形式，只代表合适的实参可以使调用成为常量表达式。具体调用仍要检查整条求值路径是否违反常量表达式规则。
+
+在 C++11 常量求值中，常见的禁止项包括：
+
+- 调用不符合要求的非 `constexpr` 函数。
+- 执行未定义行为，例如除以零或有符号整数溢出。
+- 使用 `new`、`delete`。
+- 执行自增、自减或赋值等修改操作。
+- 读取不允许在常量表达式中读取的运行期对象。
+- 走到 `throw` 表达式。
+
+### 7. `constexpr` 构造函数
+
+`constexpr` 构造函数使类对象有机会在常量表达式中被构造：
+
+```cpp
+struct Point {
+    int x;
+    int y;
+
+    constexpr Point(int x_value, int y_value)
+        : x(x_value), y(y_value)
+    {
+    }
+
+    constexpr int sum() const
+    {
+        return x + y;
+    }
+};
+
+constexpr Point point(2, 3);
+static_assert(point.sum() == 5, "");
+```
+
+严格 C++11 中，`constexpr` 构造函数的函数体通常为空；成员和基类子对象必须通过成员初始化列表、默认成员初始化器等允许的方式全部初始化。类不能有虚基类，相关成员和基类的构造也必须满足常量表达式要求。
+
+拥有 `constexpr` 构造函数不表示该类的每个对象都是常量：
+
+```cpp
+Point runtime_point(1, 2); // 普通、可修改的运行期对象
+runtime_point.x = 10;      // 合法
+```
+
+使 `point` 成为只读对象的是对象声明中的 `constexpr`，不是构造函数单独把整个类型变成了只读类型。
+
+### 8. C++11 中 `constexpr` 成员函数隐含 `const`
+
+C++11 规定，非静态且不是构造函数的 `constexpr` 成员函数隐含为 `const` 成员函数。因此：
+
+```cpp
+struct Number {
+    int value;
+
+    constexpr int get() const
+    {
+        return value;
+    }
+};
+```
+
+末尾显式写出的 `const` 在 C++11 中虽然语义上重复，但能把“不会修改当前对象”的接口意图写清楚，也更利于阅读和跨版本理解。
+
+这个“隐含 `const`”是 C++11 的特殊规则；C++14 改变了相关规则，阅读不同标准版本的资料时要注意边界。
+
+### 9. `constexpr` 指针限定的是指针本身
+
+```cpp
+int global_value = 0;
+constexpr int* pointer = &global_value;
+```
+
+`pointer` 的实际类型是：
+
+```cpp
+int* const
+```
+
+也就是“指向 `int` 的常量指针”，不是“指向 `const int` 的指针”：
+
+```cpp
+*pointer = 5; // 合法：所指的 int 不是 const
+// pointer = nullptr; // 错误：pointer 本身是 const
+```
+
+这里能使用 `&global_value`，是因为具有静态存储期对象的地址可以满足相应地址常量表达式规则。普通自动局部对象的地址不能用来初始化这种 C++11 `constexpr` 指针：
+
+```cpp
+void function()
+{
+    int local = 0;
+    // constexpr int* bad = &local; // 错误
+}
+```
+
+### 10. `static constexpr` 数据成员与 C++11 的类外定义
+
+```cpp
+struct Limits {
+    static constexpr int maximum = 64;
+};
+
+int data[Limits::maximum]; // 作为常量值使用
+```
+
+在 C++11 中，如果该静态成员被 ODR-use，例如程序要取得它的地址或把它绑定到需要对象实体的引用，通常还要在一个 `.cpp` 文件中提供唯一类外定义：
+
+```cpp
+constexpr int Limits::maximum; // 不再写初始化器
+```
+
+C++17 的 `inline constexpr` 静态数据成员改变了这方面的常见写法，但那不属于 C++11。
+
+### 11. `constexpr` 函数通常为什么定义在头文件
+
+`constexpr` 函数和 `constexpr` 构造函数隐含为 `inline`。要让调用处进行常量求值，编译器通常必须在该翻译单元中看到函数定义，而不只是声明，所以这类短函数常直接定义在头文件中：
+
+```cpp
+// math_util.h
+constexpr int cube(int number)
+{
+    return number * number * number;
+}
+```
+
+隐含的 `inline` 规则允许多个翻译单元通过同一个头文件看到相同定义，而不会因此形成普通非 `inline` 外部函数的重复定义问题。
+
+同一个函数的所有声明都必须一致地带有 `constexpr`：
+
+```cpp
+constexpr int cube(int number);
+// int cube(int number); // 错误：遗漏 constexpr
+```
+
+### 12. `constexpr` 不等于“没有运行期开销或存储”
+
+`constexpr` 主要是语言语义约束，不是性能开关：
+
+- 在必须使用常量表达式的位置，编译器必须验证表达式满足规则。
+- 在普通运行期上下文中，`constexpr` 函数可以照常运行。
+- 对象是否实际占用存储，要看它是否需要对象实体，例如是否取地址。
+- 普通表达式也可能被优化器在编译时计算。
+- `constexpr` 不保证程序一定比不用它更快。
+
+### 13. 容易混入 C++11 的后续版本语法
+
+| 特性 | 所属版本 |
+|---|---|
+| 基础 `constexpr` 变量、函数和构造函数 | C++11 |
+| 放宽 `constexpr` 函数体，可写局部变量和循环 | C++14 |
+| `if constexpr` | C++17 |
+| `constexpr` Lambda | C++17 |
+| `inline static constexpr` 数据成员 | C++17 |
+| `consteval`、`constinit` | C++20 |
+
+下面不是 C++11：
+
+```cpp
+// if constexpr (...) { } // C++17
+// consteval int f();      // C++20
+// constinit int value;    // C++20
+```
+
+### 14. 最小判断流程
+
+看到 `constexpr` 时依次判断：
+
+1. 它修饰的是对象、普通函数，还是构造函数？
+2. 如果是对象：是否已初始化，类型是否为字面类型，初始化器是否是常量表达式？
+3. 如果是函数：是否满足严格 C++11 的单一 `return` 等函数体限制？
+4. 如果是一次函数调用：这次传入的实参和实际执行路径是否都满足常量表达式规则？
+5. 当前位置是否强制要求常量表达式？
+6. 示例是否偷偷使用了 C++14、C++17 或 C++20 才加入的规则？
+
+**一句话记忆：** C++11 的 `constexpr` 对对象表示“这个初始化必须是常量表达式，而且对象只读”；对函数表示“满足条件的调用可以成为常量表达式”，而不是“每次调用都强制在编译期执行”。
