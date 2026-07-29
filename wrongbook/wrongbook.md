@@ -1868,3 +1868,163 @@ using Count = unsigned long;
 `Count` 的大小就是当前实现中 `unsigned long` 的大小，C++11 不保证它固定为 32 位或 64 位。
 
 **一句话记忆：** `using 新名字 = 原类型;` 是 C++11 类型别名语法；它提高可读性并支持别名模板，但只是改名字，不会创造新的独立类型。
+
+## W018：`const` 的左右位置怎样理解？
+
+**问题：** `const` 有所谓左右结合性吗？`const int*`、`int* const` 等声明怎样阅读？
+
+**核心答案：** `const` 不是二元运算符，没有运算符意义上的左结合或右结合。它是类型限定符，关键是判断它限定的是整数、指针还是其他类型层级。`const int` 与 `int const` 完全相同；遇到指针时，从变量名向外阅读最可靠。
+
+### 1. `const int` 与 `int const` 相同
+
+```cpp
+const int a = 1;
+int const b = 2;
+```
+
+`a`、`b` 都是 `const int` 对象。这里 `const` 写在基础类型左边或右边，含义没有区别。
+
+一种常用的辅助口诀是：
+
+> `const` 优先看左边；左边没有可限定的类型成分时再看右边。
+
+它只是阅读辅助，不是运算符结合性规则。
+
+### 2. 指向常量的指针
+
+```cpp
+const int* pointer;
+int const* pointer2;
+```
+
+两者类型相同，都是：
+
+```text
+指向 const int 的指针
+```
+
+`const` 限定所指的 `int`，不是指针变量：
+
+```cpp
+int first = 1;
+int second = 2;
+
+const int* pointer = &first;
+pointer = &second; // 正确：指针可以改变指向
+// *pointer = 3;   // 错误：不能通过 pointer 修改所指整数
+```
+
+### 3. 常量指针
+
+```cpp
+int* const pointer = &first;
+```
+
+从变量名 `pointer` 向外读：
+
+```text
+pointer 是 const 的
+pointer 是一个指针
+它指向 int
+```
+
+所以它是“指向 `int` 的常量指针”：
+
+```cpp
+*pointer = 3;       // 正确：所指 int 可以修改
+// pointer = &second; // 错误：指针本身不能改变指向
+```
+
+### 4. 指针和所指对象都为常量
+
+```cpp
+const int* const pointer = &first;
+// 等价于：
+int const* const pointer2 = &first;
+```
+
+这是：
+
+```text
+指向 const int 的 const 指针
+```
+
+因此两种修改都不允许：
+
+```cpp
+// *pointer = 3;       // 错误
+// pointer = &second;  // 错误
+```
+
+### 5. 四种写法对比
+
+| 声明 | 指针能否改指向 | 能否通过指针修改对象 |
+|---|---:|---:|
+| `int* p` | 可以 | 可以 |
+| `const int* p` | 可以 | 不可以 |
+| `int* const p` | 不可以 | 可以 |
+| `const int* const p` | 不可以 | 不可以 |
+
+简化记忆：
+
+```text
+const 在 * 左边 → 所指对象只读
+const 在 * 右边 → 指针本身只读
+```
+
+### 6. 顶层与底层 `const`
+
+```cpp
+const int* pointer; // 底层 const：所指 int 只读
+int* const pointer2 = nullptr; // 顶层 const：pointer2 本身只读
+```
+
+- 顶层 `const` 限定当前对象本身。
+- 底层 `const` 位于指针、引用等复合类型内部，限定它所访问的对象。
+
+这解释了普通按值 `auto` 为什么会去掉顶层 `const`，却保留指针所指类型中的底层 `const`。
+
+### 7. 类型别名的常见陷阱
+
+```cpp
+using IntPointer = int*;
+
+int value = 1;
+const IntPointer pointer = &value;
+```
+
+`IntPointer` 已经是完整的 `int*` 类型，因此：
+
+```cpp
+const IntPointer
+```
+
+等价于：
+
+```cpp
+int* const
+```
+
+而不是 `const int*`。`const` 限定整个别名类型，也就是指针本身。
+
+### 8. 引用中的 `const`
+
+```cpp
+const int& reference = value;
+int const& reference2 = value;
+```
+
+两者都是“到 `const int` 的引用”。引用建立后本来就不能重新绑定，所以不存在通过 `int& const` 给引用本身再加顶层 `const` 的普通写法。
+
+### 9. 成员函数后的 `const`
+
+```cpp
+class Counter {
+public:
+    int get() const;
+};
+```
+
+这里的 `const` 限定成员函数对当前对象的访问，表示不能通过该成员函数修改对象的普通非 `mutable` 成员。它不是在限定返回类型 `int`。
+
+**一句话记忆：** `const int` 与 `int const` 相同；遇到 `*` 时，左侧 `const` 通常限制所指对象，右侧 `const` 限制指针本身；复杂声明从变量名向外读。
