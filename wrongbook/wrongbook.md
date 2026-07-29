@@ -7274,3 +7274,162 @@ object = object;
 `const` 成员或引用成员也可能使编译器生成的复制赋值运算符被删除，因为它们不能被普通赋值；但复制构造仍可能通过初始化来建立这些成员。
 
 **一句话记忆：** `T b = a;` 是创建 `b`，调用复制构造；先有 `b` 再写 `b = a;` 才是复制赋值。
+
+## W037：`= default`、`= delete`、`override` 与 `final`
+
+**问题：** `= default`、`= delete`、`override` 和 `final` 分别有什么作用？它们应该写在什么位置？
+
+**核心答案：**
+
+- `= default`：明确请求编译器生成某个特殊成员函数。
+- `= delete`：声明该函数存在，但禁止任何最终选择它的调用。
+- `override`：要求成员函数确实覆盖某个基类虚函数，否则编译失败。
+- `final`：禁止类继续被继承，或者禁止虚函数继续被覆盖。
+
+### 1. `= default`
+
+C++11 中，`= default` 用于特殊成员函数：
+
+```cpp
+class Value
+{
+public:
+    Value() = default;
+    Value(const Value&) = default;
+    Value& operator=(const Value&) = default;
+    ~Value() = default;
+};
+```
+
+它表示“使用编译器按照语言规则生成的版本”，不是把函数赋值为某个叫 `default` 的值。
+
+`= default` 也不能强迫一个本来无法生成的函数变得有效。例如成员本身不可复制时，默认化的复制函数仍可能被隐式定义为删除：
+
+```cpp
+#include <memory>
+
+class Owner
+{
+public:
+    Owner() = default;
+    Owner(const Owner&) = default; // 实际仍被删除
+
+private:
+    std::unique_ptr<int> pointer_;
+};
+```
+
+原因是 `unique_ptr` 不可复制。
+
+### 2. `= delete`
+
+`= delete` 明确禁止调用某个函数，最常见用途是禁止复制：
+
+```cpp
+class UniqueResource
+{
+public:
+    UniqueResource() = default;
+
+    UniqueResource(const UniqueResource&) = delete;
+    UniqueResource& operator=(const UniqueResource&) = delete;
+};
+```
+
+```cpp
+UniqueResource first;
+// UniqueResource second = first; // 错误：复制构造函数已删除
+// second = first;                // 错误：复制赋值已删除
+```
+
+它也能删除普通重载：
+
+```cpp
+void process(int);
+void process(double) = delete;
+
+process(3);   // 合法
+// process(3.5); // 错误：重载决议选中了已删除函数
+```
+
+已删除函数仍参与名字查找和重载决议；如果它成为最佳候选，程序才会报错。因此 `= delete` 比“只是不写定义”更早、更清楚地给出编译诊断。
+
+### 3. `override`
+
+`override` 写在派生类虚成员函数的形参列表及限定符之后：
+
+```cpp
+class Base
+{
+public:
+    virtual void run() const;
+    virtual ~Base() {}
+};
+
+class Derived : public Base
+{
+public:
+    void run() const override;
+    ~Derived() override = default;
+};
+```
+
+写了 `override` 后，编译器会验证基类中存在可被该函数覆盖的虚函数。下面会报错：
+
+```cpp
+class Wrong : public Base
+{
+public:
+    void run() override; // 错误：缺少 const，不覆盖 Base::run() const
+};
+```
+
+`override` 自身已经说明该函数是虚函数，因此不必重复写 `virtual`；写成 `virtual void run() const override` 也合法。
+
+参数类型、成员函数的 `const`、引用限定符等必须满足覆盖规则。返回类型通常也必须相同，但类指针或引用存在协变返回类型这一受限例外。
+
+### 4. `final`
+
+`final` 可以限制类：
+
+```cpp
+class Leaf final : public Base
+{
+};
+
+// class Child : public Leaf {}; // 错误：Leaf 禁止继续派生
+```
+
+也可以限制虚函数：
+
+```cpp
+class Middle : public Base
+{
+public:
+    void run() const override final;
+};
+
+class Bottom : public Middle
+{
+public:
+    // void run() const override; // 错误：该虚函数已 final
+};
+```
+
+被标为 `final` 的函数仍然可以正常调用，它只是不能再被派生类覆盖。`= delete` 则禁止调用被删除的函数；两者用途不同。
+
+### 5. 一起记忆
+
+```cpp
+class Derived final : public Base
+{
+public:
+    Derived() = default;                    // 让编译器生成
+    Derived(const Derived&) = delete;       // 禁止复制构造
+    Derived& operator=(const Derived&) = delete;
+    void run() const override final;        // 确认覆盖，并禁止继续覆盖
+    ~Derived() override = default;          // 默认析构，同时检查覆盖关系
+};
+```
+
+**一句话记忆：** `default` 是“请生成”，`delete` 是“禁止用”，`override` 是“必须覆盖成功”，`final` 是“到此为止”。
