@@ -5555,3 +5555,399 @@ using Base::function;
 ```
 
 **一句话记忆：** 局部变量看花括号，形参看到函数体结束，函数作用域主要管标签，命名空间成员用 `namespace::name`，类成员用 `Class::name` 或 `this->name`；可见性、生命周期、链接和访问权限必须分开判断。
+
+## W027：C++11 的四种存储期
+
+**问题：** 自动存储期、静态存储期、线程存储期和动态存储期分别是什么？它们与作用域、对象生命周期及常见的“栈/堆”说法有什么区别？
+
+**核心答案：** 存储期描述对象所占存储从什么时候可用到什么时候结束。自动存储期通常持续到当前块或函数调用结束；静态存储期覆盖整个程序运行期；线程存储期覆盖当前线程运行期且每个线程有独立对象；动态存储期由显式分配与释放或 RAII 所有者控制，不与创建它的块自动同步结束。
+
+### 1. 一段代码看全四种
+
+```cpp
+#include <memory>
+
+int global_value = 0;                 // 静态存储期
+thread_local int thread_value = 0;    // 线程存储期
+
+void function(int parameter)          // parameter：自动存储期
+{
+    int local = 0;                    // 自动存储期
+    static int calls = 0;             // 静态存储期
+    thread_local int local_thread = 0;// 线程存储期
+
+    int* raw = new int(5);            // *raw：动态存储期
+    delete raw;
+
+    std::unique_ptr<int> owner(
+        new int(6));                   // 所管对象：动态存储期
+}
+```
+
+特别注意：
+
+```text
+raw 指针变量本身是自动存储期；
+new int(5) 创建的目标对象是动态存储期。
+```
+
+指针和所指对象可以具有不同存储期。
+
+### 2. 自动存储期
+
+典型对象：
+
+- 普通块作用域局部变量。
+- 函数按值形参。
+- 未声明为 `static`、`thread_local` 或指向其他实体的普通局部对象。
+
+```cpp
+void function(int parameter)
+{
+    int local = 1;
+}
+```
+
+每次调用函数都会建立本次调用对应的 `parameter` 和 `local` 对象；离开相应块时对象销毁。
+
+```cpp
+void recursive(int depth)
+{
+    int value = depth;
+
+    if (depth > 0) {
+        recursive(depth - 1);
+    }
+}
+```
+
+每一层递归调用都有自己独立的 `value`。
+
+### 3. 自动存储期不等于标准保证的“栈”
+
+工程上常说局部变量位于栈上，但 ISO C++11 描述的是自动存储期，并不强制实现必须使用某种名为“栈”的硬件或内存结构。
+
+编译器可能：
+
+- 把对象放进调用栈。
+- 把值放入寄存器。
+- 优化掉不需要实际存储的对象。
+
+所以严谨术语是“自动存储期对象”。
+
+### 4. 自动局部基础类型默认可能未初始化
+
+```cpp
+void function()
+{
+    int value;
+    int* pointer;
+
+    // 读取 value 或 pointer 的不确定值是错误的
+}
+```
+
+应初始化：
+
+```cpp
+int value = 0;
+int* pointer = nullptr;
+```
+
+自动存储期本身不保证普通基础类型自动清零。
+
+### 5. 静态存储期
+
+典型对象：
+
+- 命名空间作用域变量。
+- 使用 `static` 声明的局部对象。
+- 类的静态数据成员对应的对象。
+- 字符串字面量。
+
+```cpp
+int global_value = 0;
+
+void function()
+{
+    static int calls = 0;
+    ++calls;
+}
+```
+
+这些对象的存储贯穿整个程序运行期。
+
+### 6. 局部静态对象只创建一次
+
+```cpp
+void function()
+{
+    static int calls = 0;
+    ++calls;
+}
+```
+
+多次调用：
+
+```cpp
+function();
+function();
+function();
+```
+
+三个调用使用同一个 `calls` 对象，值会持续保留，而不是每次重新创建。
+
+这里：
+
+- `calls` 的名字具有块作用域。
+- `calls` 对象具有静态存储期。
+
+再次说明作用域与存储期不是同一概念。
+
+### 7. 局部静态对象何时初始化
+
+```cpp
+Object& instance()
+{
+    static Object object;
+    return object;
+}
+```
+
+函数局部静态对象通常在控制第一次经过声明时初始化。C++11 保证并发线程到达该初始化时，初始化过程按规则只完成一次。
+
+如果初始化抛出异常，本次初始化没有成功，之后再次经过声明时可以重新尝试。
+
+### 8. 静态存储期对象的零初始化
+
+```cpp
+int global_value;
+
+void function()
+{
+    static int local_static;
+}
+```
+
+没有显式初始化器时，这些静态存储期整数会先被零初始化：
+
+```text
+global_value == 0
+local_static == 0
+```
+
+这与未初始化的普通自动局部 `int` 不同。
+
+### 9. 静态初始化顺序风险
+
+同一翻译单元和不同翻译单元中的命名空间作用域对象具有初始化顺序规则；跨翻译单元让一个全局对象的动态初始化依赖另一个全局对象，容易产生初始化顺序问题。
+
+常见规避方式：
+
+```cpp
+Object& get_object()
+{
+    static Object object;
+    return object;
+}
+```
+
+把依赖对象放在函数局部静态对象中，首次实际使用时初始化。
+
+### 10. `static` 关键字不只表示存储期
+
+```cpp
+static int namespace_value;
+```
+
+命名空间作用域中的 `static` 还会影响链接。
+
+```cpp
+class Example {
+    static int count;
+};
+```
+
+类中的 `static` 表示成员不属于某个单独对象。
+
+因此看到 `static` 时要根据上下文判断它对存储期、链接或类成员语义的影响。
+
+### 11. 线程存储期
+
+使用：
+
+```cpp
+thread_local int counter = 0;
+```
+
+线程存储期对象：
+
+- 每个线程各自拥有一份独立对象。
+- 当前线程通过名字访问自己的那一份。
+- 存储通常持续到当前线程结束。
+- 在线程结束时销毁对应对象。
+
+示意：
+
+```text
+线程A：counter = 3
+线程B：counter = 8
+线程C：counter = 0
+```
+
+它们不是同一个共享整数。
+
+### 12. 块作用域的 `thread_local`
+
+```cpp
+void process()
+{
+    thread_local int calls = 0;
+    ++calls;
+}
+```
+
+`calls`：
+
+- 名字只在 `process` 的相应块内可见。
+- 每个线程分别拥有自己的 `calls`。
+- 同一线程多次调用 `process` 时，该线程的值持续保留。
+
+### 13. `thread_local` 不等于线程安全共享
+
+`thread_local` 通过“每个线程独立一份”避免直接共享同一个对象，但它不能自动解决其他共享数据上的竞争。
+
+如果多个线程仍然访问同一个普通全局对象，就可能需要：
+
+- `std::mutex`。
+- `std::atomic`。
+- 其他同步设计。
+
+### 14. 动态存储期
+
+```cpp
+int* pointer = new int(5);
+
+delete pointer;
+```
+
+动态对象的存储从分配成功开始，直到正确释放。
+
+它不会因为创建它的代码块结束而自动销毁：
+
+```cpp
+int* create()
+{
+    int* pointer = new int(5);
+    return pointer;
+}
+```
+
+函数返回后，指针变量 `pointer` 销毁，但动态整数仍然存在。调用者必须承担释放责任。
+
+### 15. 动态数组必须正确配对
+
+```cpp
+int* one = new int(5);
+delete one;
+
+int* many = new int[10];
+delete[] many;
+```
+
+必须配对：
+
+```text
+new    ↔ delete
+new[]  ↔ delete[]
+```
+
+配错、重复释放或释放后继续使用都会造成未定义行为。
+
+### 16. 动态存储期的三个典型问题
+
+#### 内存泄漏
+
+```cpp
+void function()
+{
+    int* pointer = new int(5);
+} // pointer消失，但动态对象没有释放
+```
+
+#### 悬空指针
+
+```cpp
+int* pointer = new int(5);
+delete pointer;
+
+// pointer仍保存旧地址，但对象已销毁
+```
+
+#### 重复释放
+
+```cpp
+delete pointer;
+// delete pointer; // 未定义行为
+```
+
+### 17. C++11 优先使用 RAII
+
+```cpp
+#include <memory>
+
+std::unique_ptr<int> pointer(
+    new int(5));
+```
+
+`std::unique_ptr` 销毁时自动释放所拥有对象：
+
+```cpp
+void function()
+{
+    std::unique_ptr<int> pointer(
+        new int(5));
+} // 自动释放
+```
+
+动态数组和顺序元素通常优先使用：
+
+```cpp
+std::vector<int> values(10);
+```
+
+而不是手工管理 `new[]`。
+
+### 18. 存储期与对象生命周期
+
+两者密切相关但不是完全相同概念：
+
+- 存储期描述原始存储存在多久。
+- 对象生命周期描述某种类型的对象何时开始存在、何时可以合法使用、何时结束。
+
+普通代码中初始化成功后生命周期开始，析构时结束；放置 `new`、联合体等低层场景会让两者区别更加明显。
+
+### 19. 四种存储期总表
+
+| 存储期 | 典型声明 | 数量 | 结束时间 |
+|---|---|---|---|
+| 自动 | 普通局部变量、形参 | 每次进入或调用各一份 | 离开相应块或调用结束 |
+| 静态 | 全局变量、局部 `static` | 整个程序通常一份相应对象 | 程序结束 |
+| 线程 | `thread_local` | 每个线程一份 | 对应线程结束 |
+| 动态 | `new` 创建的对象 | 每次成功分配一份 | `delete`、RAII释放或泄漏到进程结束 |
+
+### 20. 最终判断法
+
+看到一个对象时依次问：
+
+```text
+1. 名字在哪个作用域可见？
+2. 对象是哪一种存储期？
+3. 对象生命周期是否已经开始？
+4. 对象是否已经销毁？
+5. 谁拥有它并负责释放？
+6. 指针变量与所指对象是否具有不同存储期？
+7. 多线程下是一份共享对象，还是每线程一份？
+```
+
+**一句话记忆：** 普通局部对象随块自动结束，全局和 `static` 对象贯穿程序，每个 `thread_local` 对象随各自线程存在，`new` 出来的对象则必须由 `delete` 或 RAII 所有者结束。
