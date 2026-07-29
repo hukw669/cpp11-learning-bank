@@ -1741,3 +1741,130 @@ auto add(int a, int b) -> int
 ```
 
 **一句话记忆：** `auto` 可以推导几乎所有可从初始化器确定的类型；普通 `auto` 得到按值副本并去掉引用和顶层 `const`，需要引用时必须明确写 `auto&`、`const auto&` 或相应引用形式。
+
+## W017：`using Count = unsigned long;` 是什么语法？
+
+**问题：** C++11 中是否存在 `using Count = unsigned long;` 这种语法？它有什么作用？
+
+**核心答案：** 有。这是 C++11 的类型别名声明，表示 `Count` 是已有类型 `unsigned long` 的另一个名字。它与 `typedef unsigned long Count;` 基本等价，不创建变量，也不创建独立的新类型。
+
+### 1. 基本语法
+
+```cpp
+using Count = unsigned long;
+
+Count total = 10;
+```
+
+编译器把 `Count` 当作 `unsigned long` 使用：
+
+```cpp
+unsigned long total = 10;
+```
+
+别名声明的一般形式是：
+
+```cpp
+using 别名 = 原类型;
+```
+
+### 2. 与 `typedef` 对比
+
+下面两句表达相同类型别名：
+
+```cpp
+typedef unsigned long Count;
+using Count = unsigned long;
+```
+
+`using` 的书写顺序通常更直观，可以读成“`Count` 等于 `unsigned long`”。
+
+复杂类型的差别更明显。定义函数指针别名：
+
+```cpp
+typedef void (*OldHandler)(int);
+using Handler = void (*)(int);
+```
+
+两者含义相同，但 `using` 通常更容易从左到右阅读。
+
+### 3. 类型别名不是新类型
+
+```cpp
+using Count = unsigned long;
+```
+
+`Count` 和 `unsigned long` 是同一种类型：
+
+```cpp
+void process(unsigned long);
+// void process(Count); // 不是新重载，而是同一个函数的重复声明
+```
+
+两个不同别名也不能提供强类型隔离：
+
+```cpp
+using UserId = unsigned long;
+using OrderId = unsigned long;
+
+UserId user = 1;
+OrderId order = user; // 合法，因为底层仍是同一种类型
+```
+
+如果需要防止不同业务量相互混用，应定义包装类、结构体或适当的 `enum class`，而不是只使用别名。
+
+### 4. C++11 的别名模板
+
+`using` 比 `typedef` 更重要的能力是可以直接定义别名模板：
+
+```cpp
+#include <vector>
+
+template<class T>
+using NumberList = std::vector<T>;
+
+NumberList<int> values;
+```
+
+这里：
+
+```cpp
+NumberList<int>
+```
+
+等价于：
+
+```cpp
+std::vector<int>
+```
+
+传统 `typedef` 不能直接写出这种别名模板形式，通常需要额外的类模板包装。
+
+### 5. `using` 关键字还有其他用途
+
+下面使用同一个关键字，但不是类型别名：
+
+```cpp
+using std::cout;       // using 声明：把特定名字引入当前作用域
+using namespace std;   // using 指令：引入命名空间中的名字
+```
+
+在派生类中还可写：
+
+```cpp
+using Base::function;
+```
+
+用于把基类的重载成员引入派生类作用域。判断含义时必须看完整语法。
+
+### 6. `unsigned long` 的大小不固定
+
+类型别名不会改变原类型的范围和大小：
+
+```cpp
+using Count = unsigned long;
+```
+
+`Count` 的大小就是当前实现中 `unsigned long` 的大小，C++11 不保证它固定为 32 位或 64 位。
+
+**一句话记忆：** `using 新名字 = 原类型;` 是 C++11 类型别名语法；它提高可读性并支持别名模板，但只是改名字，不会创造新的独立类型。
