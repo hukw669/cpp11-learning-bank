@@ -2073,15 +2073,184 @@ int const& reference2 = value;
 ### 9. 成员函数后的 `const`
 
 ```cpp
-class Counter {
+class Counter
+{
 public:
-    int get() const;
+    int get() const
+    {
+        return value;
+    }
+
+private:
+    int value = 0;
 };
 ```
 
-这里的 `const` 限定成员函数对当前对象的访问，表示不能通过该成员函数修改对象的普通非 `mutable` 成员。它不是在限定返回类型 `int`。
+这里的 `const` 限定成员函数对当前对象的访问。它不是在限定返回类型 `int`。
 
-**一句话记忆：** `const int` 与 `int const` 相同；遇到 `*` 时，左侧 `const` 通常限制所指对象，右侧 `const` 限制指针本身；复杂声明从变量名向外读。
+#### 用途一：让常量对象和常量引用能够查询对象
+
+```cpp
+void print(const Counter& counter)
+{
+    int value = counter.get();
+}
+```
+
+`counter` 是到常量对象的引用，只能通过它调用 `const` 成员函数。这样函数可以读取对象状态，同时向调用者承诺不会通过该引用修改对象的普通成员。
+
+非 `const` 对象也可以调用 `const` 成员函数：
+
+```cpp
+Counter counter;
+counter.get(); // 正确
+```
+
+因此只读查询函数通常应声明为 `const`，例如：
+
+```cpp
+size()
+empty()
+get_name()
+find()
+```
+
+#### 用途二：让编译器检查是否意外修改当前对象
+
+```cpp
+class Counter
+{
+public:
+    int get() const
+    {
+        // value = 10; // 错误：不能修改普通数据成员
+        return value;
+    }
+
+private:
+    int value = 0;
+};
+```
+
+在 `const` 成员函数中，`this` 指向一个具有 `const` 限定的当前对象。因此不能：
+
+- 修改当前对象的普通非 `mutable` 数据成员。
+- 通过当前对象调用普通非 `const` 成员函数。
+- 返回允许调用者修改普通成员的非 `const` 引用或指针。
+
+这可以在编译阶段发现“查询函数意外修改对象”的错误。
+
+#### 用途三：形成 `const` 与非 `const` 重载
+
+成员函数末尾的 `const` 属于函数类型的一部分，因此可以重载：
+
+```cpp
+#include <cstddef>
+
+class Buffer
+{
+public:
+    char& at(std::size_t index)
+    {
+        return data[index];
+    }
+
+    const char& at(std::size_t index) const
+    {
+        return data[index];
+    }
+
+private:
+    char data[10] = {};
+};
+```
+
+使用规则：
+
+```cpp
+Buffer writable;
+writable.at(0) = 'A'; // 调用非 const 版本，返回 char&
+
+const Buffer readonly{};
+char ch = readonly.at(0); // 调用 const 版本，返回 const char&
+// readonly.at(0) = 'B';  // 错误：不能通过 const 引用修改元素
+```
+
+这种重载可以让同一个接口根据对象是否只读，返回不同权限的引用或指针。标准容器的 `operator[]`、`at()`、`begin()` 等接口大量采用这种设计。
+
+#### 用途四：表达接口语义
+
+```cpp
+class Student
+{
+public:
+    int score() const;
+    void set_score(int score);
+};
+```
+
+看到声明即可理解：
+
+```text
+score()      → 查询操作，不应改变对象的普通状态
+set_score()  → 修改操作
+```
+
+这叫 const-correctness：把“只读”和“可修改”的权限写进类型系统，而不是只依靠注释。
+
+#### 声明和定义必须同时写 `const`
+
+```cpp
+class Student
+{
+public:
+    int score() const;
+};
+
+int Student::score() const
+{
+    return 0;
+}
+```
+
+如果类外定义漏掉末尾的 `const`，它就不再是前面声明的同一个成员函数。
+
+#### `const` 成员函数不代表完全没有副作用
+
+它主要限制通过当前对象修改普通非 `mutable` 成员，但仍可能：
+
+- 修改 `mutable` 成员。
+- 修改静态数据成员。
+- 修改指针所指向的外部对象。
+- 执行输入输出、写日志或调用其他具有副作用的函数。
+
+```cpp
+class Cache
+{
+public:
+    int query() const
+    {
+        ++query_count;
+        return value;
+    }
+
+private:
+    int value = 10;
+    mutable int query_count = 0;
+};
+```
+
+`mutable` 常用于缓存、统计或同步对象，但它不自动提供线程安全。
+
+静态成员函数不能在末尾添加这种 `const`：
+
+```cpp
+// static int get() const; // 错误
+```
+
+因为静态成员函数没有 `this`，也就没有“当前对象是否为 const”可供限定。
+
+**一句话记忆：** `const` 成员函数既允许只读对象调用，又提供编译期防误修改、const 重载和接口权限表达；它限制的是当前对象，不保证函数完全没有副作用。
 
 ## W019：C++11 的 `constexpr` 详解
 
@@ -5951,3 +6120,401 @@ std::vector<int> values(10);
 ```
 
 **一句话记忆：** 普通局部对象随块自动结束，全局和 `static` 对象贯穿程序，每个 `thread_local` 对象随各自线程存在，`new` 出来的对象则必须由 `delete` 或 RAII 所有者结束。
+
+## W028：`class`、`struct` 与静态成员函数
+
+**问题：** `class` 和 `struct` 的默认规则有什么差异？为什么静态成员函数没有 `this`？局部名字遮蔽成员时怎样使用 `this->member`？
+
+**核心答案：**
+
+- `class` 的成员默认是 `private`，默认继承方式也是 `private`。
+- `struct` 的成员默认是 `public`，默认继承方式也是 `public`。
+- 静态成员函数不依附某个具体对象调用，因此没有指向“当前对象”的 `this` 指针。
+- 形参或局部变量与数据成员同名时，未限定名字优先表示更近的形参或局部变量；使用 `this->member` 可以明确访问当前对象的成员。
+
+### 1. `class` 与 `struct`
+
+```cpp
+class A
+{
+    int value; // 默认 private
+};
+
+struct B
+{
+    int value; // 默认 public
+};
+```
+
+继承时也有默认差异：
+
+```cpp
+class Base
+{
+};
+
+class DerivedA : Base   // 默认 private 继承
+{
+};
+
+struct DerivedB : Base  // 默认 public 继承
+{
+};
+```
+
+显式写出访问权限或继承方式后，就按显式规则处理：
+
+```cpp
+class C
+{
+public:
+    int value;
+};
+
+class DerivedC : public Base
+{
+};
+```
+
+`class` 和 `struct` 的能力基本相同：二者都可以拥有数据成员、成员函数、构造函数、析构函数、访问控制和继承关系。不能把 `struct` 理解成“只能存放数据”。
+
+### 2. 静态成员函数为什么没有 `this`
+
+```cpp
+class Counter
+{
+public:
+    static void reset_total()
+    {
+        total = 0;      // 正确：访问静态数据成员
+        // value = 0;   // 错误：没有具体对象
+    }
+
+private:
+    int value = 0;      // 每个对象各有一份
+    static int total;   // 整个类共享
+};
+```
+
+普通非静态成员函数通过隐含的 `this` 知道当前操作哪个对象：
+
+```cpp
+void set(int value)
+{
+    this->value = value;
+}
+```
+
+静态成员函数可以直接通过类名调用：
+
+```cpp
+Counter::reset_total();
+```
+
+调用时没有提供某个 `Counter` 对象，因此不存在“当前对象”，也就没有 `this`。它可以直接访问静态成员；如果需要访问非静态成员，必须显式取得一个对象、引用或指针。
+
+### 3. 局部名字遮蔽成员时使用 `this->member`
+
+```cpp
+class Student
+{
+public:
+    void set_score_wrong(int score)
+    {
+        score = score;
+    }
+
+    void set_score(int score)
+    {
+        this->score = score;
+    }
+
+    int get_score() const
+    {
+        return score;
+    }
+
+private:
+    int score = 0;
+};
+```
+
+在 `set_score_wrong` 中，形参也叫 `score`。形参处于更近的函数参数作用域，会遮蔽同名数据成员。因此：
+
+```cpp
+score = score;
+```
+
+左右两边都表示形参，相当于把形参赋给它自己，当前对象的数据成员完全没有改变。它通常可以通过编译，所以容易形成逻辑错误。
+
+在普通非静态成员函数中：
+
+```cpp
+this
+```
+
+指向当前调用对象。因此：
+
+```cpp
+this->score = score;
+```
+
+可以明确区分：
+
+```text
+this->score  → 当前 Student 对象的数据成员
+score        → 函数形参
+```
+
+调用示例：
+
+```cpp
+Student student;
+student.set_score(90);
+
+// student.get_score() == 90
+```
+
+局部变量也可能遮蔽成员：
+
+```cpp
+class Example
+{
+public:
+    void function()
+    {
+        int value = 20;
+
+        // value       表示局部变量，值为 20
+        // this->value 表示数据成员，值为 10
+    }
+
+private:
+    int value = 10;
+};
+```
+
+还可以通过避免同名来消除遮蔽：
+
+```cpp
+void set_score(int new_score)
+{
+    score = new_score;
+}
+```
+
+这里没有局部名字叫 `score`，因此未限定的 `score` 可以找到数据成员。
+
+注意：这通常不是编译器无法选择的“二义性”。名字查找已经选择了更近的局部名字；`this->member` 的作用是明确访问被遮蔽的数据成员。
+
+**一句话记忆：** 形参和成员同名时，裸名字找形参，`this->成员` 找当前对象；`class` 默认私有、`struct` 默认公有，静态成员函数没有 `this`。
+
+## W029：C++11 的 `friend` 友元语法
+
+**问题：** `friend` 怎样声明友元函数、友元类和指定的友元成员函数？友元拥有什么权限，又有哪些限制？
+
+**核心答案：** `friend` 声明写在类定义内部，用于授权指定函数或类访问当前类的 `private` 和 `protected` 成员。友元获得访问权限，但不会因此成为当前类的成员；友元关系不传递、不继承，也不自动互为友元。
+
+### 1. 友元函数
+
+```cpp
+#include <iostream>
+
+class Box
+{
+    friend void print(const Box& box);
+
+private:
+    int value = 7;
+};
+
+void print(const Box& box)
+{
+    std::cout << box.value << '\n';
+}
+```
+
+语法：
+
+```cpp
+class ClassName
+{
+    friend ReturnType function(Parameters);
+};
+```
+
+`print` 可以访问 `Box::value`，但它仍然是普通非成员函数：
+
+- 没有隐含的 `this`。
+- 调用写成 `print(box)`，不是 `box.print()`。
+- 必须通过参数等方式取得需要访问的对象。
+
+### 2. 在类内直接定义友元函数
+
+```cpp
+class Point
+{
+public:
+    Point(int x, int y)
+        : x(x), y(y)
+    {
+    }
+
+    friend bool equal(const Point& left, const Point& right)
+    {
+        return left.x == right.x &&
+               left.y == right.y;
+    }
+
+private:
+    int x;
+    int y;
+};
+```
+
+在类定义内部定义的这种友元函数是非成员函数，并隐含具有 `inline` 属性。实际工程中通常仍需合理安排命名空间声明，使普通名字查找和接口位置清晰。
+
+### 3. 友元类
+
+```cpp
+class Inspector;
+
+class Vault
+{
+    friend class Inspector;
+
+private:
+    int secret = 42;
+};
+
+class Inspector
+{
+public:
+    int inspect(const Vault& vault) const
+    {
+        return vault.secret;
+    }
+};
+```
+
+语法：
+
+```cpp
+class Owner
+{
+    friend class FriendClass;
+};
+```
+
+这会让 `Inspector` 的成员函数都能够按规则访问 `Vault` 的非公有成员。它不会让 `Vault` 自动成为 `Inspector` 的友元。
+
+### 4. 只授权另一个类的某个成员函数
+
+如果不想把整个类都设为友元，可以只授权指定成员：
+
+```cpp
+class Vault;
+
+class Inspector
+{
+public:
+    int inspect(const Vault& vault) const;
+};
+
+class Vault
+{
+    friend int Inspector::inspect(const Vault& vault) const;
+
+private:
+    int secret = 42;
+};
+
+int Inspector::inspect(const Vault& vault) const
+{
+    return vault.secret;
+}
+```
+
+语法：
+
+```cpp
+friend ReturnType ClassName::member(Parameters) qualifiers;
+```
+
+由于编译器必须先知道这个成员函数确实存在，所以相关类和成员声明的先后顺序很重要。
+
+### 5. 友元模板
+
+可以授权一族模板实例：
+
+```cpp
+template<class T>
+class Inspector;
+
+class Vault
+{
+    template<class T>
+    friend class Inspector;
+
+private:
+    int secret = 42;
+};
+```
+
+这表示 `Inspector<T>` 的各个相应实例都是 `Vault` 的友元。模板友元还可以只授权特定实例，但声明和定义依赖关系更复杂，应在掌握模板后使用。
+
+### 6. `friend` 放在 `public`、`private` 还是 `protected`
+
+下面两种授权效果相同：
+
+```cpp
+class A
+{
+public:
+    friend void first(A&);
+};
+
+class B
+{
+private:
+    friend void second(B&);
+};
+```
+
+友元声明放在哪个访问区域，不改变授权效果。通常按项目风格把友元声明集中放置。
+
+### 7. 友元关系的四个重要限制
+
+#### 不自动互为友元
+
+```text
+A 把 B 设为友元
+不代表 B 把 A 设为友元
+```
+
+#### 不传递
+
+```text
+B 是 A 的友元
+C 是 B 的友元
+不能推出 C 是 A 的友元
+```
+
+#### 不继承
+
+某个类是友元，不代表它的派生类自动得到同样权限。
+
+#### 友元不是成员
+
+友元函数不会获得 `this`，也不能使用 `object.friend_function()` 的成员调用语法。
+
+### 8. 典型使用场景
+
+- 对称的二元运算符，例如 `operator==`。
+- 流输出运算符，例如 `operator<<`，因为左操作数是输出流。
+- 与类实现紧密配合的工厂或辅助函数。
+- 必须读取内部表示的少量协作类。
+
+不要为了省略正常接口而大量使用友元。过多友元会扩大能够破坏类不变量的代码范围，并增加类之间的耦合。
+
+**一句话记忆：** `friend` 写在被访问的类中，只授予非公有成员访问权；友元不是成员，关系不互惠、不传递、不继承。
