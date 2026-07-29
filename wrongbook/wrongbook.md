@@ -1379,3 +1379,185 @@ std::move(reference)
 ```
 
 **一句话记忆：** 先学值类别和引用绑定，再学 `auto`/`decltype`，随后学习 `move`、移动构造，最后进入引用折叠、`forward` 和完美转发。
+
+## W016：`auto` 只能推导基本类型吗？
+
+**问题：** 普通 `auto` 是否只包含或只保留基本变量类型？为什么 `auto a = original;` 和 `auto b = alias;` 都得到 `int`？
+
+**核心答案：** 不是。`auto` 是编译期类型推导占位符，可以推导基本类型、类类型、指针、迭代器、函数指针和 Lambda 闭包类型等。题目中的 `a`、`b` 得到 `int`，是因为没有配合 `&` 的普通按值 `auto` 会建立新对象，并通常去掉初始化器类型中的引用和顶层 `const`。
+
+### 1. `auto` 可以推导很多类型
+
+```cpp
+#include <string>
+#include <vector>
+
+auto number = 3;                       // int
+auto text = std::string("hello");      // std::string
+auto pointer = &number;                // int*
+auto values = std::vector<int>{1, 2};  // std::vector<int>
+auto iterator = values.begin();        // std::vector<int>::iterator
+auto function = [](int x) { return x + 1; }; // 某个闭包类型
+```
+
+Lambda 的闭包类型没有可直接写出的普通类型名，因此 `auto` 特别适合保存 Lambda。
+
+### 2. 原题为什么得到两个 `int`？
+
+```cpp
+const int original = 7;
+const int& alias = original;
+
+auto a = original;
+auto b = alias;
+```
+
+推导结果：
+
+```text
+a：int
+b：int
+```
+
+`auto a = original;` 按值读取 `original` 并创建独立对象，去掉 `original` 自身的顶层 `const`。
+
+`auto b = alias;` 同样按值创建独立对象。引用不是被复制到 `b` 中；程序读取 `alias` 所引用的整数值，并以该值初始化新的 `int` 对象。
+
+因此：
+
+```cpp
+a = 10; // 正确，只修改 a
+b = 20; // 正确，只修改 b
+```
+
+`original` 仍然是 `7`。
+
+### 3. 想保留引用要明确写 `&`
+
+```cpp
+auto& a = original;       // const int&
+auto& b = alias;          // const int&
+const auto& c = original; // const int&
+```
+
+这里 `a`、`b`、`c` 都引用 `original`，没有创建整数副本；由于原对象为 `const int`，不能通过这些引用修改它。
+
+### 4. 普通 `auto` 去掉的是顶层 `const`
+
+顶层 `const` 修饰变量自身：
+
+```cpp
+const int value = 3;
+auto copy = value; // int
+```
+
+底层 `const` 是所指对象类型的一部分，通常会保留：
+
+```cpp
+const int value = 3;
+const int* pointer = &value;
+
+auto copy = pointer; // const int*
+```
+
+`copy` 指针变量本身可以改变指向，但不能通过它修改所指的 `const int`。
+
+再看指针自身为常量的情况：
+
+```cpp
+int value = 3;
+int* const fixed_pointer = &value;
+
+auto pointer = fixed_pointer; // int*，去掉指针自身的顶层 const
+```
+
+### 5. `auto` 不是动态类型
+
+```cpp
+auto value = 3; // 编译期确定为 int
+
+value = 5;      // 正确
+// value = "hello"; // 错误：value 不会在运行时变成字符串
+```
+
+类型一旦推导完成就固定下来。普通变量也必须提供初始化器：
+
+```cpp
+// auto value; // 错误：没有信息可供推导
+```
+
+### 5.1 `const auto a;` 为什么不合法？
+
+```cpp
+// const auto a; // 错误
+```
+
+`auto` 只是占位符，编译器必须查看初始化器才能知道应当替换成什么类型。这里没有初始化器，因此无法判断 `a` 是 `const int`、`const std::string` 还是其他类型。
+
+提供初始化器后才合法：
+
+```cpp
+const auto a = 7;                  // const int
+const auto b = std::string("hi");  // const std::string
+```
+
+可以理解为分两步：
+
+```text
+根据初始化器推导 auto
+→ 再应用声明中明确写出的 const
+```
+
+`const auto` 中的 `const` 是顶层 `const`，表示推导得到的对象本身不可修改：
+
+```cpp
+const auto a = 7;
+// a = 8; // 错误
+```
+
+如果 `auto` 推导成指针，`const` 默认修饰指针变量本身：
+
+```cpp
+int value = 3;
+const auto pointer = &value; // int* const
+
+*pointer = 4;      // 正确：所指 int 可修改
+// pointer = nullptr; // 错误：指针本身是 const
+```
+
+这与指向常量的指针不同：
+
+```cpp
+const auto* pointer = &value; // const int*
+```
+
+这里 `pointer` 可以改指别处，但不能通过它修改 `value`。
+
+### 6. 常见形式
+
+| 写法 | 主要含义 |
+|---|---|
+| `auto x = expr;` | 按值创建新对象，通常去掉引用和顶层 `const` |
+| `auto& x = expr;` | 推导并绑定左值引用 |
+| `const auto& x = expr;` | 绑定只读引用，也能绑定临时值 |
+| `auto* x = expr;` | 明确推导指针类型 |
+| `auto&& x = expr;` | 根据初始化器值类别发生引用推导和折叠 |
+
+### 7. C++11 版本边界
+
+C++11 支持变量 `auto` 和尾置返回类型：
+
+```cpp
+auto add(int a, int b) -> int
+{
+    return a + b;
+}
+```
+
+仅根据函数体自动推导普通函数返回类型是 C++14 功能，不应写成 C++11：
+
+```cpp
+// auto add(int a, int b) { return a + b; } // 不是严格 C++11
+```
+
+**一句话记忆：** `auto` 可以推导几乎所有可从初始化器确定的类型；普通 `auto` 得到按值副本并去掉引用和顶层 `const`，需要引用时必须明确写 `auto&`、`const auto&` 或相应引用形式。
