@@ -5097,3 +5097,442 @@ if (pointer != nullptr) {
 ```
 
 **一句话记忆：** 指针中有一个地址不代表该地址当前对应有效对象；解引用前必须同时确认指针已初始化、非空、在合法范围内，而且目标对象仍然存活。
+
+## W026：块作用域、函数参数作用域、函数作用域、命名空间作用域和类作用域
+
+**问题：** C++11 中这五种作用域分别表示什么？名字从哪里开始可见、在哪里结束，又有哪些常见混淆？
+
+**核心答案：** 作用域描述“一个名字可以在哪段源代码中被查找到”。局部变量通常具有块作用域；形参具有函数参数作用域；函数作用域主要用于标签；命名空间成员具有命名空间作用域；类成员和嵌套类型具有类作用域。作用域不等于对象生命周期、链接属性或访问权限。
+
+### 1. 先区分四个概念
+
+| 概念 | 回答的问题 |
+|---|---|
+| 作用域 | 名字在哪里可以被查找到 |
+| 存储期 | 对象的存储从何时存在到何时结束 |
+| 链接 | 不同声明是否表示同一个实体 |
+| 访问控制 | `public`、`protected`、`private` 是否允许访问 |
+
+例如：
+
+```cpp
+void function()
+{
+    static int count = 0;
+}
+```
+
+`count`：
+
+- 名字具有块作用域，只能在相应块内直接使用。
+- 对象却具有静态存储期，贯穿整个程序运行期。
+
+所以“只能在函数内使用”不代表“每次调用都重新创建”。
+
+### 2. 块作用域
+
+由花括号形成的复合语句是典型的块：
+
+```cpp
+void function()
+{
+    int outer = 1;
+
+    {
+        int inner = 2;
+        outer += inner;
+    }
+
+    // inner 在这里不可见
+}
+```
+
+`inner` 的作用域从声明点开始，到内层 `}` 结束。`outer` 从自己的声明点开始，到函数体最外层 `}` 结束。
+
+控制语句也会形成相应作用域：
+
+```cpp
+for (int index = 0; index < 3; ++index) {
+    // index 可见
+}
+
+// index 不可见
+```
+
+### 3. 名字从声明点之后开始生效
+
+```cpp
+int value = 1;
+
+{
+    int value = value;
+}
+```
+
+内层 `value` 的名字在其声明符之后已经进入作用域，所以初始化器右侧可能指向正在初始化的内层对象，而不是外层对象。这会读取尚未正确初始化的值。
+
+不要写这种自遮蔽初始化：
+
+```cpp
+int value = value;
+```
+
+应使用不同名字或显式先保存外层值。
+
+### 4. 内层块可以隐藏外层名字
+
+```cpp
+int value = 1;
+
+void function()
+{
+    int value = 2;
+
+    {
+        int value = 3;
+        // 使用最内层 value
+    }
+
+    // 使用函数体中的 value，值为2
+}
+```
+
+这叫名字隐藏或遮蔽，不是重新修改了外层对象。全局命名空间中的名字可用：
+
+```cpp
+::value
+```
+
+显式访问。
+
+### 5. 函数参数作用域
+
+```cpp
+int add(int left, int right)
+{
+    return left + right;
+}
+```
+
+在函数定义中，形参 `left`、`right` 从各自声明点开始，作用域延伸到函数体结束。
+
+形参是函数调用时建立的局部对象：
+
+```cpp
+void change(int value)
+{
+    value = 10;
+}
+```
+
+按值形参 `value` 是独立副本。
+
+### 6. 函数声明中的形参名字只用于说明
+
+```cpp
+int add(int left, int right);
+```
+
+如果这里只是声明，形参名字的作用域不会延伸到其他代码。名字甚至可以省略：
+
+```cpp
+int add(int, int);
+```
+
+定义中的形参名字也可以不同：
+
+```cpp
+int add(int first, int second)
+{
+    return first + second;
+}
+```
+
+函数类型取决于参数类型，不取决于形参名字。
+
+### 7. 形参不能在函数最外层块中重复声明
+
+```cpp
+void function(int value)
+{
+    // int value = 3; // 错误：与形参重复
+
+    {
+        int value = 3; // 内层块可以遮蔽，但通常不推荐
+    }
+}
+```
+
+为了可读性，通常避免用内层变量隐藏形参。
+
+### 8. C++11 尾置返回类型可以使用形参名字
+
+```cpp
+auto copy(int value) -> decltype(value)
+{
+    return value;
+}
+```
+
+解析尾置返回类型时，形参 `value` 已经声明，因此可在 `decltype(value)` 中使用。
+
+### 9. 函数作用域主要用于标签
+
+C++ 中“函数作用域”不是说所有函数局部变量都具有函数作用域。普通局部变量是块作用域。
+
+具有函数作用域的典型名字是 `goto` 标签：
+
+```cpp
+void function(bool stop)
+{
+    if (stop) {
+        goto finished;
+    }
+
+    // 其他代码
+
+finished:
+    return;
+}
+```
+
+标签可以在声明位置之前被 `goto` 引用，因为标签名字在整个函数中有效。
+
+标签不能跨越函数使用：
+
+```cpp
+void first()
+{
+target:
+    return;
+}
+
+void second()
+{
+    // goto target; // 错误：target 属于另一个函数
+}
+```
+
+即使标签名字在整个函数中可见，`goto` 仍不能非法跳过需要初始化的对象并进入其作用域。
+
+### 10. 命名空间作用域
+
+```cpp
+namespace application {
+    int value = 1;
+
+    void run()
+    {
+        ++value;
+    }
+}
+```
+
+`value` 和 `run` 是命名空间成员，可通过限定名访问：
+
+```cpp
+application::value;
+application::run();
+```
+
+全局名字实际上位于全局命名空间：
+
+```cpp
+int global_value = 0;
+```
+
+可写：
+
+```cpp
+::global_value
+```
+
+### 11. 命名空间可以重新打开
+
+```cpp
+namespace application {
+    void first();
+}
+
+namespace application {
+    void second();
+}
+```
+
+这两个代码块属于同一个 `application` 命名空间，不是两个不同命名空间。
+
+C++11 嵌套命名空间需要写：
+
+```cpp
+namespace company {
+namespace project {
+    int value = 0;
+}
+}
+```
+
+下面的简写属于 C++17：
+
+```cpp
+// namespace company::project { }
+```
+
+### 12. 命名空间作用域不等于外部链接
+
+```cpp
+namespace {
+    int hidden = 0;
+}
+```
+
+`hidden` 具有命名空间作用域，但匿名命名空间使其只在当前翻译单元中具有相应可见实体。
+
+同样：
+
+```cpp
+const int limit = 10;
+```
+
+命名空间作用域的非 `extern const` 对象在 C++ 中默认具有内部链接。
+
+所以：
+
+```text
+作用域描述名字在哪里可见；
+链接描述跨声明、跨翻译单元是否为同一实体。
+```
+
+### 13. 类作用域
+
+```cpp
+class Student {
+public:
+    using Id = int;
+
+    void set_score(int score)
+    {
+        this->score = score;
+    }
+
+private:
+    Id id = 0;
+    int score = 0;
+};
+```
+
+`Id`、`set_score`、`id` 和 `score` 都是类 `Student` 作用域中的名字。
+
+类外可以使用限定名：
+
+```cpp
+Student::Id identifier = 1;
+```
+
+但能否访问某个成员还要经过 `public`、`protected`、`private` 检查。
+
+### 14. 类作用域与访问权限不同
+
+```cpp
+class Example {
+private:
+    int value = 0;
+};
+```
+
+`value` 确实属于 `Example` 的类作用域，但类外普通代码不能访问它，是因为访问控制，不是因为它“不在类作用域中”。
+
+### 15. 形参可以隐藏数据成员
+
+```cpp
+class Student {
+public:
+    void set_score(int score)
+    {
+        this->score = score;
+    }
+
+private:
+    int score = 0;
+};
+```
+
+函数体中的普通名字：
+
+```cpp
+score
+```
+
+优先表示形参。成员使用：
+
+```cpp
+this->score
+```
+
+明确指定。
+
+### 16. 类外定义成员函数
+
+```cpp
+class Counter {
+public:
+    void increment();
+
+private:
+    int value = 0;
+};
+
+void Counter::increment()
+{
+    ++value;
+}
+```
+
+虽然函数体写在类定义外，`Counter::increment` 的函数体仍处于相应成员函数语境，可以直接查找类成员 `value`。
+
+### 17. 派生类名字会隐藏基类同名成员
+
+```cpp
+class Base {
+public:
+    void function(int);
+};
+
+class Derived : public Base {
+public:
+    void function(double);
+};
+```
+
+`Derived::function` 会在名字查找阶段隐藏基类中的同名集合。需要时可以：
+
+```cpp
+using Base::function;
+```
+
+把基类重载引入派生类作用域。
+
+### 18. 五种作用域总表
+
+| 作用域 | 典型声明 | 基本范围 |
+|---|---|---|
+| 块作用域 | `{ int value; }` | 声明点到当前块末尾 |
+| 函数参数作用域 | `void f(int value)` | 参数声明点到函数定义末尾；纯声明中到声明结束 |
+| 函数作用域 | `label:` | 整个当前函数，主要用于标签 |
+| 命名空间作用域 | `namespace app { int value; }` | 相应命名空间中的声明区域，可通过限定名查找 |
+| 类作用域 | `class C { int value; };` | 类成员声明和相应成员语境 |
+
+### 19. 最终判断方法
+
+看到一个名字时依次问：
+
+```text
+1. 它声明在哪一种作用域中？
+2. 当前使用位置位于其声明点之后吗？
+3. 是否被更内层同名声明隐藏？
+4. 是否需要 namespace::name、Class::name、this->name 或 ::name？
+5. 即使能找到名字，对象是否仍然存活？
+6. 即使能找到成员，访问权限是否允许？
+7. 跨源文件使用时，链接和定义是否正确？
+```
+
+**一句话记忆：** 局部变量看花括号，形参看到函数体结束，函数作用域主要管标签，命名空间成员用 `namespace::name`，类成员用 `Class::name` 或 `this->name`；可见性、生命周期、链接和访问权限必须分开判断。
