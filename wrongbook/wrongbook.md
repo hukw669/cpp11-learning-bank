@@ -3119,3 +3119,474 @@ std::bit_cast
 但它不属于 C++11。严格 C++11 中应使用 `std::memcpy`。
 
 **一句话记忆：** 浮点数不能直接位运算；普通强制转换改变数值，`std::memcpy` 才能在 C++11 中安全复制对象表示，而具体符号位、指数位和小数位布局仍然取决于实现。
+
+## W022：一次学会复杂声明的结合规则
+
+**问题：** `int (*operation)(int, int)` 应该怎样阅读？指针、数组和函数声明中的括号、结合顺序与“优先级”是什么关系？
+
+**核心答案：** C++ 声明使用的是声明符语法，不应机械套用普通表达式的运算符优先级表。阅读时从变量名开始向外展开：后缀 `()`、`[]` 比前缀 `*`、`&`、`&&` 绑定更紧，括号可以强制先把内部声明符组合起来，最左侧的基础类型最后读。
+
+### 1. `int (*operation)(int, int)` 的含义
+
+```cpp
+int (*operation)(int, int);
+```
+
+从名字 `operation` 开始：
+
+```text
+operation
+→ (*operation)             operation 是指针
+→ (*operation)(int, int)   指向接受两个 int 参数的函数
+→ int                      该函数返回 int
+```
+
+完整含义：
+
+```text
+operation 是一个指针，
+它指向“接受两个 int 参数并返回 int”的函数。
+```
+
+### 2. 实际定义、赋值与调用
+
+```cpp
+int add(int left, int right)
+{
+    return left + right;
+}
+
+int (*operation)(int, int) = &add;
+
+int result = operation(2, 3);
+```
+
+`result` 为 `5`。
+
+函数名在这里可以转换为函数指针，因此也可以写：
+
+```cpp
+int (*operation)(int, int) = add;
+```
+
+调用时下面两种写法等价：
+
+```cpp
+operation(2, 3);
+(*operation)(2, 3);
+```
+
+通常使用第一种。
+
+### 3. 最重要的绑定规则
+
+声明符中可以先记住三层：
+
+| 层级 | 形式 | 含义 |
+|---|---|---|
+| 最先结合 | `name(...)` | `name` 是函数 |
+| 最先结合 | `name[...]` | `name` 是数组 |
+| 随后结合 | `*name` | `name` 是指针 |
+| 随后结合 | `&name` | `name` 是左值引用 |
+| 随后结合 | `&&name` | `name` 是右值引用 |
+| 改变绑定 | `( ... )` | 强制内部先组成一个整体 |
+
+简化为：
+
+```text
+函数 ()、数组 [] 比指针 *、引用 & 绑定更紧；
+括号可以改变默认绑定。
+```
+
+### 4. 五步阅读法
+
+遇到复杂声明：
+
+1. 找到被声明的名字。
+2. 从名字开始，在当前括号层向右看 `()` 或 `[]`。
+3. 再向左看 `*`、`&`、`&&` 以及相应 `const`。
+4. 离开当前括号，继续向外重复。
+5. 最后读取最左侧基础类型。
+
+可以把每一步翻译成一句中文，再组合起来。
+
+### 5. 有括号与无括号完全不同
+
+#### 函数指针
+
+```cpp
+int (*operation)(int, int);
+```
+
+从名字开始：
+
+```text
+operation → * → (int, int) → int
+```
+
+含义：
+
+```text
+指向函数的指针；
+函数接受两个 int，返回 int。
+```
+
+#### 返回指针的函数
+
+```cpp
+int* operation(int, int);
+```
+
+由于 `()` 比 `*` 绑定更紧：
+
+```text
+operation → (int, int) → * → int
+```
+
+含义：
+
+```text
+operation 是函数；
+函数接受两个 int，返回 int*。
+```
+
+对比：
+
+```cpp
+int (*operation)(int, int); // 指针，指向函数
+int* operation(int, int);   // 函数，返回指针
+```
+
+关键区别就是：
+
+```text
+(*operation)
+```
+
+外面的括号。
+
+### 6. 指针数组与数组指针
+
+#### 指针数组
+
+```cpp
+int* values[4];
+```
+
+从 `values` 开始：
+
+```text
+values → [4] → * → int
+```
+
+含义：
+
+```text
+values 是含 4 个元素的数组；
+每个元素都是 int*。
+```
+
+结构：
+
+```text
+values
+├─ int*
+├─ int*
+├─ int*
+└─ int*
+```
+
+#### 数组指针
+
+```cpp
+int (*values)[4];
+```
+
+从 `values` 开始：
+
+```text
+values → * → [4] → int
+```
+
+含义：
+
+```text
+values 是一个指针；
+它指向“含 4 个 int 的数组”。
+```
+
+对比：
+
+```cpp
+int* values[4];   // 数组，元素是指针
+int (*values)[4]; // 指针，指向数组
+```
+
+同样是括号改变了绑定。
+
+### 7. 函数指针数组
+
+```cpp
+int (*operations[4])(int, int);
+```
+
+从 `operations` 开始：
+
+```text
+operations
+→ [4]                    含 4 个元素的数组
+→ *                      每个元素是指针
+→ (int, int)             指向接受两个 int 的函数
+→ int                    函数返回 int
+```
+
+完整含义：
+
+```text
+operations 是含 4 个函数指针的数组；
+每个函数都接受两个 int，并返回 int。
+```
+
+示例：
+
+```cpp
+int add(int, int);
+int subtract(int, int);
+
+int (*operations[2])(int, int) = {
+    &add,
+    &subtract
+};
+```
+
+### 8. 函数返回函数指针
+
+直接声明可以写成：
+
+```cpp
+int (*choose_operation(bool use_add))(int, int);
+```
+
+从名字开始：
+
+```text
+choose_operation
+→ (bool)                 是接受 bool 的函数
+→ *                      返回指针
+→ (int, int)             指针指向接受两个 int 的函数
+→ int                    所指函数返回 int
+```
+
+虽然合法，但不易阅读。C++11 更推荐类型别名：
+
+```cpp
+using Operation = int (*)(int, int);
+
+Operation choose_operation(bool use_add);
+```
+
+现在含义非常直接：
+
+```text
+choose_operation 接受 bool，返回 Operation。
+```
+
+### 9. C++11 的三种简化写法
+
+#### `using` 类型别名
+
+```cpp
+using Operation = int (*)(int, int);
+
+Operation operation = &add;
+```
+
+这是复杂函数指针接口最推荐的基础写法。
+
+#### `auto`
+
+```cpp
+auto operation = &add;
+```
+
+编译器根据初始化器推导出函数指针类型。
+
+#### `decltype`
+
+```cpp
+decltype(&add) operation = &add;
+```
+
+`&add` 的类型就是相应函数指针类型。
+
+### 10. 尾置返回类型
+
+C++11 可以用尾置返回类型简化“返回函数指针”的声明：
+
+```cpp
+auto choose_operation(bool use_add)
+    -> int (*)(int, int);
+```
+
+仍然推荐在重复使用时配合别名：
+
+```cpp
+using Operation = int (*)(int, int);
+
+Operation choose_operation(bool use_add);
+```
+
+### 11. 引用数组与引用函数
+
+#### 数组引用
+
+```cpp
+int (&array_reference)[4] = array;
+```
+
+阅读：
+
+```text
+array_reference 是引用；
+它引用一个含 4 个 int 的数组。
+```
+
+#### 函数引用
+
+```cpp
+int (&function_reference)(int, int) = add;
+```
+
+阅读：
+
+```text
+function_reference 是引用；
+它引用接受两个 int 并返回 int 的函数。
+```
+
+### 12. `const` 与指针层级
+
+```cpp
+const int* first;
+int* const second = nullptr;
+const int* const third = nullptr;
+```
+
+含义：
+
+```text
+first  ：指向 const int 的指针
+second ：指向 int 的 const 指针
+third  ：指向 const int 的 const 指针
+```
+
+快速判断：
+
+```text
+const 在 * 左边 → 所指对象只读
+const 在 * 右边 → 指针本身只读
+```
+
+完整类型别名会影响阅读：
+
+```cpp
+using IntPointer = int*;
+
+const IntPointer pointer = nullptr;
+```
+
+这里 `pointer` 是：
+
+```cpp
+int* const
+```
+
+因为 `const` 限定整个 `IntPointer`，也就是指针本身。
+
+### 13. 函数不能直接返回数组或函数
+
+下面的目标不能直接写成“函数返回数组”或“函数返回函数”：
+
+```text
+函数不能直接返回数组类型；
+函数不能直接返回函数类型。
+```
+
+但函数可以返回：
+
+- 指向数组的指针。
+- 数组的引用。
+- 函数指针。
+- 函数引用。
+- `std::array` 等可以按值返回的类对象。
+
+### 14. 快速对照表
+
+| 声明 | 含义 |
+|---|---|
+| `int* p` | 指向 `int` 的指针 |
+| `int a[4]` | 含 4 个 `int` 的数组 |
+| `int* a[4]` | 含 4 个 `int*` 的数组 |
+| `int (*p)[4]` | 指向“含 4 个 `int` 的数组”的指针 |
+| `int f(int)` | 接受 `int`、返回 `int` 的函数 |
+| `int* f(int)` | 接受 `int`、返回 `int*` 的函数 |
+| `int (*p)(int)` | 指向“接受 `int`、返回 `int` 的函数”的指针 |
+| `int (*a[4])(int)` | 含 4 个相应函数指针的数组 |
+| `int (&r)[4]` | 对“含 4 个 `int` 的数组”的引用 |
+| `int (&r)(int)` | 对“接受 `int`、返回 `int` 的函数”的引用 |
+
+### 15. 三道即时判断
+
+#### 第一题
+
+```cpp
+double* function(int);
+```
+
+答案：
+
+```text
+function 是函数；
+接受一个 int；
+返回 double*。
+```
+
+#### 第二题
+
+```cpp
+double (*pointer)(int);
+```
+
+答案：
+
+```text
+pointer 是指针；
+指向接受一个 int 并返回 double 的函数。
+```
+
+#### 第三题
+
+```cpp
+double (*table[3])(int);
+```
+
+答案：
+
+```text
+table 是含 3 个元素的数组；
+每个元素是函数指针；
+所指函数接受 int 并返回 double。
+```
+
+### 16. 最终口诀
+
+```text
+从名字出发，先右后左，逐层向外；
+() 和 [] 抢先结合；
+*、&、&& 随后结合；
+括号改变默认绑定；
+基础类型最后读；
+实际代码优先使用 using。
+```
+
+**一句话记忆：** `int (*operation)(int, int)` 从名字向外读就是“`operation` 是指针，指向接受两个 `int` 并返回 `int` 的函数”；去掉 `*operation` 外的括号，就会变成“函数返回指针”。
