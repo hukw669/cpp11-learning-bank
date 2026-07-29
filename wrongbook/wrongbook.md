@@ -3590,3 +3590,243 @@ table 是含 3 个元素的数组；
 ```
 
 **一句话记忆：** `int (*operation)(int, int)` 从名字向外读就是“`operation` 是指针，指向接受两个 `int` 并返回 `int` 的函数”；去掉 `*operation` 外的括号，就会变成“函数返回指针”。
+
+## W023：为什么有时 `sizeof(array)` 是整个数组，有时却是指针大小？
+
+**问题：** `sizeof(array)` 为什么能够得到整个数组的大小？之前函数中的同样写法为什么只能得到指针大小？
+
+**核心答案：** `sizeof` 是少数不会触发数组到指针转换的语境之一。如果当前表达式确实具有数组类型，`sizeof(array)` 得到整个数组对象的字节数；但函数形参中写出的 `T array[]` 会在函数类型形成时直接调整为 `T*`，因此函数体中的名字从一开始就是指针，不再是数组。
+
+### 1. 真正的数组对象
+
+```cpp
+int array[10] = {};
+
+sizeof(array);    // 整个 int[10] 数组的大小
+sizeof(array[0]); // 一个 int 元素的大小
+```
+
+结果满足：
+
+```cpp
+sizeof(array) == 10 * sizeof(int);
+```
+
+原因不是 `sizeof` 根据指针猜出了数组长度，而是表达式 `array` 在这里仍具有类型：
+
+```cpp
+int[10]
+```
+
+`sizeof` 直接查询这个完整数组类型的大小。
+
+### 2. 普通表达式中数组通常会转换为指针
+
+```cpp
+int array[10] = {};
+int* pointer = array;
+```
+
+右侧 `array` 在该初始化语境中转换为指向首元素的指针：
+
+```cpp
+&array[0]
+```
+
+因此：
+
+```cpp
+sizeof(array);   // 整个数组大小
+sizeof(pointer); // 指针对象自身大小
+```
+
+两者可能不同。例如在某个使用 4 字节 `int`、8 字节指针的平台上：
+
+```text
+sizeof(array)   = 40
+sizeof(pointer) = 8
+```
+
+这些具体数字依赖实现，但两者查询的对象类型不同这一点不变。
+
+### 3. 函数形参中的数组写法会调整为指针
+
+```cpp
+void inspect(int array[])
+{
+    sizeof(array); // 指针大小
+}
+```
+
+函数形参声明中的：
+
+```cpp
+int array[]
+```
+
+会调整为：
+
+```cpp
+int* array
+```
+
+所以下面两个函数声明表示同一种函数类型：
+
+```cpp
+void first(int array[]);
+void first(int* array);
+```
+
+进入函数体后，`array` 已经是一个按值传入的指针形参。因此：
+
+```cpp
+sizeof(array)
+```
+
+查询的是 `int*` 的大小。
+
+关键区别：
+
+```text
+不是 sizeof 把函数形参数组转换成了指针；
+而是数组形式的函数形参在更早的声明阶段就已经调整成了指针。
+```
+
+### 4. 形参方括号中写数字也不能保留长度
+
+```cpp
+void inspect(int array[100])
+{
+    sizeof(array); // 仍然是指针大小
+}
+```
+
+普通函数形参中的 `100` 不会让参数按值携带一个完整的百元素数组，形参仍然调整为：
+
+```cpp
+int* array
+```
+
+它也不会自动进行运行期长度检查。
+
+### 5. `sizeof(array) / sizeof(array[0])` 何时有效
+
+```cpp
+int array[10] = {};
+
+std::size_t count =
+    sizeof(array) / sizeof(array[0]);
+```
+
+这里结果为 `10`，因为当前作用域中的 `array` 是真正的数组。
+
+但下面是错误用法：
+
+```cpp
+void inspect(int array[])
+{
+    std::size_t count =
+        sizeof(array) / sizeof(array[0]);
+}
+```
+
+这里实际计算：
+
+```text
+指针大小 / 一个 int 的大小
+```
+
+结果不是调用者数组的元素数量。
+
+### 6. 函数怎样获得数组长度
+
+#### 显式传入长度
+
+```cpp
+#include <cstddef>
+
+void inspect(const int* data, std::size_t count)
+{
+}
+
+int array[10] = {};
+inspect(array, 10);
+```
+
+#### 使用数组引用保留长度
+
+```cpp
+void inspect(int (&array)[10])
+{
+    static_assert(
+        sizeof(array) / sizeof(array[0]) == 10,
+        "");
+}
+```
+
+这里形参类型是：
+
+```text
+对含 10 个 int 元素的数组的引用
+```
+
+没有调整为指针，因此长度仍是类型的一部分。
+
+#### 使用模板推导长度
+
+```cpp
+#include <cstddef>
+
+template<class T, std::size_t N>
+constexpr std::size_t array_size(T (&)[N])
+{
+    return N;
+}
+
+int array[10] = {};
+static_assert(array_size(array) == 10, "");
+```
+
+模板参数 `N` 从数组类型中推导出来。
+
+### 7. `std::array` 和 `std::vector` 不同
+
+```cpp
+#include <array>
+#include <vector>
+
+std::array<int, 10> fixed = {};
+std::vector<int> dynamic(10);
+```
+
+- `fixed.size()` 返回 `10`。
+- `sizeof(fixed)` 查询整个 `std::array` 对象大小。
+- `dynamic.size()` 返回动态元素数量。
+- `sizeof(dynamic)` 只查询 `std::vector` 管理对象自身大小，不包含动态分配的元素存储。
+
+不要使用 `sizeof(container)` 代替容器的 `.size()`。
+
+### 8. `sizeof` 返回的是字节数，不是元素数量
+
+```cpp
+std::size_t bytes = sizeof(array);
+```
+
+`sizeof` 的结果类型是 `std::size_t`，单位是 C++ 字节。C++ 保证：
+
+```cpp
+sizeof(char) == 1
+```
+
+但一个字节具体包含多少位由 `CHAR_BIT` 决定，不保证所有实现都为 8 位。
+
+### 9. 最终对照
+
+| 写法所在位置 | `array` 的实际类型 | `sizeof(array)` |
+|---|---|---|
+| `int array[10];` 所在作用域 | `int[10]` | 整个数组大小 |
+| `int* pointer = array;` 中的 `pointer` | `int*` | 指针大小 |
+| `void f(int array[])` 函数体 | `int*` | 指针大小 |
+| `void f(int (&array)[10])` 函数体 | `int[10]` 的引用 | 整个数组大小 |
+
+**一句话记忆：** 真数组遇到 `sizeof` 不会退化，所以得到整个数组大小；函数形参 `T array[]` 早已被调整成 `T*`，所以函数体内只能得到指针大小。
