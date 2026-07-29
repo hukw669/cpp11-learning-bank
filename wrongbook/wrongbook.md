@@ -1533,6 +1533,63 @@ const auto* pointer = &value; // const int*
 
 这里 `pointer` 可以改指别处，但不能通过它修改 `value`。
 
+### 5.2 `auto` 能否推导出带 `const` 的类型？
+
+可以得到带 `const` 的最终类型，但必须区分按值推导、显式添加 `const` 和保留底层 `const`。
+
+**普通按值 `auto` 不保留初始化器的顶层 `const`：**
+
+```cpp
+const int original = 7;
+auto a = original; // int
+```
+
+这里 `auto` 推导为 `int`，`a` 是可修改的独立副本。
+
+**在声明中明确写 `const`，最终对象是常量：**
+
+```cpp
+const auto b = original; // const int
+auto const c = original; // const int，与上一行相同
+```
+
+这里可以理解为 `auto` 先按值推导为 `int`，再由声明中的 `const` 得到 `const int`。
+
+**使用引用时会保留被引用对象的 `const`：**
+
+```cpp
+auto& reference = original; // const int&
+```
+
+如果去掉 `const`，非常量引用就可能修改原本的常量对象，因此推导结果必须保持只读。
+
+**指针所指类型中的底层 `const` 会保留：**
+
+```cpp
+auto pointer = &original;  // const int*
+auto* pointer2 = &original; // const int*
+```
+
+这两个指针变量自身可以改变指向，但不能通过它们修改 `original`。
+
+**`auto&&` 遇到 `const` 左值时，最终也成为常量左值引用：**
+
+```cpp
+auto&& forwarding = original; // const int&
+```
+
+因为 `original` 是 `const int` 左值，类型推导和引用折叠得到 `const int&`，而不是可修改的 `int&&`。
+
+结论：
+
+```text
+auto a = const对象       → 去掉顶层 const，按值复制
+const auto a = 表达式    → 明确创建 const 对象
+auto& a = const对象      → const T&
+auto a = 指向const的指针 → const T*
+auto&& a = const左值     → const T&
+```
+
 ### 6. 常见形式
 
 | 写法 | 主要含义 |
