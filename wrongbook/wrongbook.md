@@ -6890,3 +6890,387 @@ private:
 引用成员不把另一个完整 `Node` 嵌入当前对象，而只是绑定到外部已有对象，因此类型层面允许；但引用必须在构造时绑定，而且目标必须比引用活得更久。
 
 **一句话记忆：** `Node next` 表示“对象里面完整放另一个 Node”，导致大小无限递归；`Node* next` 表示“这里只放一个地址”，所以大小固定。
+
+## W031：`mutable` 允许修改什么
+
+**问题：** `mutable` 是什么？为什么 `const` 成员函数还能修改某些成员？
+
+**核心答案：** `mutable` 修饰非静态数据成员，表示该成员不属于对象的“逻辑常量状态”。即使通过 `const` 对象或在 `const` 成员函数中，也可以修改这个成员；其他普通成员仍然不能修改。
+
+```cpp
+class Cache
+{
+public:
+    int value() const
+    {
+        ++access_count_; // 合法：该成员是 mutable
+        return 42;
+    }
+
+private:
+    mutable int access_count_ = 0;
+};
+```
+
+典型用途是缓存、访问统计和保护逻辑状态的互斥量：
+
+```cpp
+#include <mutex>
+
+class Data
+{
+public:
+    int read() const
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return value_;
+    }
+
+private:
+    int value_ = 0;
+    mutable std::mutex mutex_;
+};
+```
+
+`mutable` 不是取消整个对象的 `const`，也不能修饰静态数据成员。它只为被明确修饰的非静态数据成员提供例外。
+
+**一句话记忆：** `mutable` 表示“对象逻辑上不变时，这个实现细节仍允许变化”。
+
+## W032：构造函数的名字、限定符与失败语义
+
+**问题：** 为什么不能写 `void Point(...)`？构造函数可以是 `const`、`static` 或虚函数吗？构造失败应怎样表示？
+
+**核心答案：** 构造函数的名字必须与类名相同，并且不能写返回类型。`void Point(...)` 具有返回类型，因此它是名为 `Point` 的普通成员函数，不是构造函数。构造函数不能声明为 `const`、`static` 或 `virtual`。
+
+```cpp
+class Point
+{
+public:
+    Point(int x, int y) // 构造函数：没有返回类型
+        : x_(x), y_(y)
+    {
+    }
+
+    // void Point(int);       // 普通成员函数，不是构造函数
+    // Point() const;         // 错误
+    // static Point();        // 错误
+    // virtual Point();       // 错误
+
+private:
+    int x_;
+    int y_;
+};
+```
+
+直接构造函数不能通过返回值报告失败。若无法建立类不变量，通常应抛出异常，使对象根本没有构造成功：
+
+```cpp
+#include <stdexcept>
+
+class Positive
+{
+public:
+    explicit Positive(int value)
+        : value_(value)
+    {
+        if (value <= 0)
+            throw std::invalid_argument("value must be positive");
+    }
+
+private:
+    int value_;
+};
+```
+
+异常发生时，已经完整构造的成员和基类子对象会被销毁，但这个最外层对象自身的析构函数不会执行，因为它从未构造完成。若项目不使用异常，可以把可能失败的工作放进工厂函数，由工厂返回状态和对象；关键是不要对外暴露违反类不变量的“半有效对象”。
+
+**一句话记忆：** 构造函数无返回类型且不能是 `const/static/virtual`；无法建立有效对象时，让构造失败，而不是留下半有效状态。
+
+## W033：默认、直接、复制与列表初始化
+
+**问题：** `T a;`、`T b{};`、`T c(arg);`、`T d = arg;`、`T e{arg};` 和 `T f = {arg};` 分别是什么初始化？它们会不会先默认构造再赋值？
+
+**核心答案：** 这些写法都直接初始化正在创建的对象，不是“先默认构造，再调用赋值运算符”。它们的语法类别和候选构造函数规则不同：
+
+| 写法 | 精确分类 | 关键规则 |
+|---|---|---|
+| `T a;` | 默认初始化 | 类类型调用默认构造函数；自动存储期的内置标量可能保持不确定值 |
+| `T b{};` | 空的直接列表初始化 | 标量得到零值；类类型按列表初始化规则选择构造函数 |
+| `T c(arg);` | 直接初始化 | 可以选择 `explicit` 构造函数 |
+| `T d = arg;` | 复制初始化 | 不能使用 `explicit` 构造函数完成隐式转换 |
+| `T e{arg};` | 直接列表初始化 | 拒绝窄化；可以选择 `explicit` 构造函数 |
+| `T f = {arg};` | 复制列表初始化 | 拒绝窄化；若最终最佳构造函数是 `explicit`，程序不合法 |
+
+```cpp
+class Widget
+{
+public:
+    explicit Widget(int value)
+        : value_(value)
+    {
+    }
+
+private:
+    int value_;
+};
+
+int main()
+{
+    int uncertain; // 自动存储期内置类型：值不确定，读取会出问题
+    int zero{};     // 0
+
+    Widget first(3);  // 合法：直接初始化
+    Widget second{3}; // 合法：直接列表初始化
+
+    // Widget third = 3;   // 错误：复制初始化不能使用 explicit 构造函数
+    // Widget fourth = {3}; // 错误：复制列表初始化最终选中 explicit
+    // int narrowed{3.5};   // 错误：列表初始化拒绝窄化
+
+    (void)uncertain; // 仅取作 discarded-value expression；不要读取其值
+    return zero;
+}
+```
+
+若类同时提供 `std::initializer_list` 构造函数，花括号初始化会优先进行面向 `initializer_list` 的重载决议，这可能使 `T{a, b}` 与 `T(a, b)` 选择不同构造函数。
+
+还要避开最令人困惑的解析：
+
+```cpp
+Widget object(); // 函数声明，不是默认构造一个 Widget
+Widget object{}; // 对象定义
+```
+
+**一句话记忆：** 初始化语法决定候选构造函数、`explicit` 和窄化规则，但任何一种初始化都不是“先构造再赋值”。
+
+## W034：构造函数初始化列表与真实初始化顺序
+
+**问题：** `const` 成员和引用成员为什么需要初始化列表？基类与成员究竟按照初始化列表的书写顺序，还是按照声明顺序初始化？
+
+**核心答案：** 引用必须在创建时绑定，不能先留空再赋值；不能通过普通赋值完成 `const` 标量成员的初次初始化。因此，在没有类内成员初始值时，它们必须由构造函数初始化列表初始化。C++11 也允许类内成员初始值，所以“必须写在初始化列表”不是无条件成立。
+
+```cpp
+class Ref
+{
+public:
+    Ref(int limit, int& target)
+        : limit_(limit), target_(target)
+    {
+    }
+
+private:
+    const int limit_;
+    int& target_;
+};
+```
+
+也可以由类内成员初始值提供默认初始化：
+
+```cpp
+class RefWithDefault
+{
+public:
+    explicit RefWithDefault(int& target)
+        : target_(target)
+    {
+    }
+
+private:
+    const int limit_ = 100;
+    int& target_;
+};
+```
+
+一个最派生对象的实际初始化顺序固定为：
+
+1. 虚基类子对象；只由最派生类负责，具体顺序按继承图的深度优先、从左到右规则确定。
+2. 直接基类；按照基类说明列表中的出现顺序。
+3. 非静态数据成员；严格按照它们在类定义中的声明顺序。
+4. 构造函数体。
+
+析构大体按照与完整构造相反的顺序进行。构造函数初始化列表的书写顺序不会改变上述次序：
+
+```cpp
+class C
+{
+public:
+    explicit C(int value)
+        : second_(first_), // 看起来先写，实际后初始化
+          first_(value)   // 看起来后写，实际先初始化
+    {
+    }
+
+private:
+    int first_;
+    int second_;
+};
+```
+
+这里 `first_` 先被初始化为 `value`，随后 `second_` 才从 `first_` 初始化，因此两个成员最终都得到 `value`。虽然行为有定义，这种反序书写很容易误导读者并触发编译器的重排警告，最好让初始化列表顺序与声明顺序一致。
+
+如果较早声明的成员依赖一个尚未初始化的较晚成员，调整初始化列表顺序也无法修复；必须调整成员声明或依赖关系。
+
+**一句话记忆：** 初始化列表决定“用什么初始化”，类中的声明顺序决定“谁先初始化”。
+
+## W035：析构函数、栈展开与构造失败后的清理
+
+**问题：** 为什么一个类只能有一个析构函数？异常传播时哪些对象会被析构？构造函数抛异常时会不会调用该对象的析构函数？
+
+**核心答案：** 析构函数的名字固定为 `~类名()`，不能有返回类型，也不能带形参。C++ 函数不能只根据返回类型重载，而所有析构函数又都只能具有同一个空形参列表，因此在 C++11 中一个类只能有一个析构函数。
+
+```cpp
+class Resource
+{
+public:
+    ~Resource() // 没有返回类型，形参列表必须为空
+    {
+    }
+
+    // int ~Resource();   // 错误：析构函数不能有返回类型
+    // ~Resource(int);    // 错误：析构函数不能有形参
+};
+```
+
+异常从当前执行点向外寻找匹配的 `catch` 时，会依次退出沿途已经进入的作用域，并销毁其中已经成功构造的自动对象，这个过程叫作栈展开：
+
+```cpp
+#include <stdexcept>
+
+class Guard
+{
+public:
+    ~Guard() {}
+};
+
+void work()
+{
+    Guard first;
+    Guard second;
+    throw std::runtime_error("failed");
+} // 展开时先析构 second，再析构 first
+```
+
+若构造函数把异常传播到调用者，最外层对象没有完成构造，因此不会调用该对象自己的析构函数；但已经成功构造完成的基类子对象和成员子对象会按构造完成顺序的反序自动析构：
+
+```cpp
+class Member
+{
+public:
+    Member();
+    ~Member();
+};
+
+class Owner
+{
+public:
+    Owner()
+        : first_(), second_()
+    {
+        throw 1;
+    }
+
+    ~Owner(); // 不会执行，因为 Owner 没有完成构造
+
+private:
+    Member first_;
+    Member second_;
+};
+```
+
+这里两个成员已经完成构造，所以异常离开 `Owner` 构造函数时会依次析构 `second_`、`first_`。如果构造 `second_` 本身就失败，则只析构已经成功构造的 `first_`，不会析构未完成的 `second_`。
+
+栈展开只会自动管理具有自动生命周期且已成功构造的对象。裸 `new` 得到的资源不会因为退出作用域而自动 `delete`，所以应使用 RAII 容器或智能指针。
+
+析构函数尤其不应让异常逃逸。若当前已经在处理一个异常，栈展开调用析构函数，而析构函数又抛出第二个异常，程序会调用 `std::terminate`。
+
+**一句话记忆：** 析构函数不能重载；栈展开只销毁已经构造成功的对象和子对象，未完成构造的最外层对象没有析构可调用。
+
+## W036：复制构造与复制赋值分别有什么用
+
+**问题：** 复制构造函数和复制赋值运算符有什么区别？什么时候调用？为什么管理资源的类经常需要自己实现它们？
+
+**核心答案：** 复制构造函数用一个已有对象初始化一个尚未创建完成的新对象；复制赋值运算符把一个已有对象的状态复制到另一个已经存在的对象中。
+
+```cpp
+class Value
+{
+public:
+    Value(const Value& other);            // 复制构造函数
+    Value& operator=(const Value& other); // 复制赋值运算符
+};
+```
+
+调用场景不同：
+
+```cpp
+Value source;
+
+Value first(source); // 直接初始化：复制构造
+Value second = source; // 复制初始化：复制构造，不是赋值
+
+Value target;
+target = source; // target 已经存在：复制赋值
+```
+
+按值传递参数可能使用复制构造：
+
+```cpp
+void consume(Value value);
+consume(source);
+```
+
+按值返回也可能涉及复制或移动，但 C++11 允许编译器进行复制消除，因此不能依靠复制构造函数的副作用判断它一定执行了几次。
+
+若没有自行声明相关特殊成员，编译器通常会尝试生成逐成员复制的版本。对于只含值语义成员的类，这往往正是需要的：
+
+```cpp
+#include <string>
+#include <vector>
+
+struct Student
+{
+    std::string name;
+    std::vector<int> scores;
+};
+```
+
+复制 `Student` 时，`string` 和 `vector` 会复制各自管理的内容，两个 `Student` 可以独立修改。
+
+裸指针所有权会带来风险：
+
+```cpp
+class Buffer
+{
+public:
+    explicit Buffer(std::size_t size)
+        : data_(new int[size]), size_(size)
+    {
+    }
+
+    ~Buffer()
+    {
+        delete[] data_;
+    }
+
+private:
+    int* data_;
+    std::size_t size_;
+};
+```
+
+如果直接使用编译器生成的复制操作，只会复制地址。两个对象随后拥有同一个数组，最终可能重复释放。此时必须选择清晰语义：
+
+- 实现深复制，让每个对象拥有独立资源。
+- 禁止复制。
+- 使用能正确表达所有权的标准类型，例如 `std::vector`、`std::unique_ptr` 或 `std::shared_ptr`。
+
+复制赋值还必须处理目标对象原有资源、异常安全和自赋值：
+
+```cpp
+object = object;
+```
+
+因此拥有资源的传统类常遵循“零法则”或“复制控制法则”：优先把资源交给标准 RAII 类型，使编译器生成的复制操作自然正确；若必须手工管理，则成组考虑析构、复制构造、复制赋值，以及 C++11 的移动构造和移动赋值。
+
+`const` 成员或引用成员也可能使编译器生成的复制赋值运算符被删除，因为它们不能被普通赋值；但复制构造仍可能通过初始化来建立这些成员。
+
+**一句话记忆：** `T b = a;` 是创建 `b`，调用复制构造；先有 `b` 再写 `b = a;` 才是复制赋值。
