@@ -1590,6 +1590,75 @@ auto a = 指向const的指针 → const T*
 auto&& a = const左值     → const T&
 ```
 
+### 5.3 `auto&` 是引用吗？
+
+是。变量声明中的 `auto&` 表示先从初始化器推导类型，再声明一个左值引用。最终类型一定是某种 `T&` 或 `const T&`：
+
+```cpp
+int value = 1;
+auto& reference = value; // int&
+```
+
+`reference` 是 `value` 的别名，不是副本：
+
+```cpp
+reference = 10; // 实际修改 value
+```
+
+与普通按值 `auto` 对比：
+
+```cpp
+int value = 1;
+
+auto copy = value;       // int，新对象
+auto& reference = value; // int&，原对象的别名
+
+copy = 2;      // value 仍为 1
+reference = 3; // value 变成 3
+```
+
+如果初始化器是常量对象，推导结果会保留 `const`：
+
+```cpp
+const int fixed = 7;
+auto& reference = fixed; // const int&
+
+// reference = 8; // 错误
+```
+
+普通 `auto&` 不能绑定临时值：
+
+```cpp
+// auto& reference = 3; // 错误：非常量左值引用不能绑定纯右值
+```
+
+需要只读地绑定临时值时使用：
+
+```cpp
+const auto& reference = 3; // const int&
+```
+
+引用必须初始化，并且初始化后不能重新绑定：
+
+```cpp
+int first = 1;
+int second = 2;
+auto& reference = first;
+
+reference = second;
+```
+
+最后一行不是让 `reference` 改为引用 `second`，而是把 `second` 的值赋给 `first`。
+
+**简记：**
+
+```text
+auto  → 按值副本
+auto& → 左值引用
+const auto& → 只读左值引用，可绑定临时值
+auto&& → 根据初始化器进行引用推导和折叠
+```
+
 ### 6. 常见形式
 
 | 写法 | 主要含义 |
