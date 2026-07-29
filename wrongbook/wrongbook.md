@@ -5347,6 +5347,25 @@ int global_value = 0;
 ::global_value
 ```
 
+开头没有名字的 `::` 表示从全局命名空间开始查找，从而绕过当前块、形参或类中的同名名字。它不限于变量：
+
+```cpp
+::global_function();
+::GlobalType object;
+::std::cout << global_value;
+```
+
+对比：
+
+```text
+::value       全局命名空间中的 value
+app::value    命名空间 app 中的 value
+Class::value  类 Class 中的成员名字
+this->value   当前对象的非静态成员 value
+```
+
+`::` 只改变名字查找起点，不会绕过链接、定义或访问控制规则。
+
 ### 11. 命名空间可以重新打开
 
 ```cpp
