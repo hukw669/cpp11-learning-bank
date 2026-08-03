@@ -30,7 +30,6 @@
 - [W028：`class`、`struct` 与静态成员函数](#w028)
 - [W029：C++11 的 `friend` 友元语法](#w029)
 - [W030：类为什么不能直接包含自身对象](#w030)
-- [W031：`mutable` 允许修改什么](#w031)
 - [W032：构造函数的名字、限定符与失败语义](#w032)
 - [W033：默认、直接、复制与列表初始化](#w033)
 - [W034：构造函数初始化列表与真实初始化顺序](#w034)
@@ -7887,54 +7886,6 @@ private:
 引用成员不把另一个完整 `Node` 嵌入当前对象，而只是绑定到外部已有对象，因此类型层面允许；但引用必须在构造时绑定，而且目标必须比引用活得更久。
 
 **一句话记忆：** `Node next` 表示“对象里面完整放另一个 Node”，导致大小无限递归；`Node* next` 表示“这里只放一个地址”，所以大小固定。
-
-[返回目录](#toc)
-
-<a id="w031"></a>
-## W031：`mutable` 允许修改什么
-
-**问题：** `mutable` 是什么？为什么 `const` 成员函数还能修改某些成员？
-
-**核心答案：** `mutable` 修饰非静态数据成员，表示该成员不属于对象的“逻辑常量状态”。即使通过 `const` 对象或在 `const` 成员函数中，也可以修改这个成员；其他普通成员仍然不能修改。
-
-```cpp
-class Cache
-{
-public:
-    int value() const
-    {
-        ++access_count_; // 合法：该成员是 mutable
-        return 42;
-    }
-
-private:
-    mutable int access_count_ = 0;
-};
-```
-
-典型用途是缓存、访问统计和保护逻辑状态的互斥量：
-
-```cpp
-#include <mutex>
-
-class Data
-{
-public:
-    int read() const
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        return value_;
-    }
-
-private:
-    int value_ = 0;
-    mutable std::mutex mutex_;
-};
-```
-
-`mutable` 不是取消整个对象的 `const`，也不能修饰静态数据成员。它只为被明确修饰的非静态数据成员提供例外。
-
-**一句话记忆：** `mutable` 表示“对象逻辑上不变时，这个实现细节仍允许变化”。
 
 [返回目录](#toc)
 
