@@ -2416,7 +2416,67 @@ decltype((reference)) b = reference; // int&：一般表达式规则
 std::move(reference)
 ```
 
-**一句话记忆：** 将亡值是“仍指向现有对象、但允许复用其资源”的表达式；`std::move(x)` 是典型将亡值，因此一般 `decltype` 规则得到 `T&&`。
+### 6. `int&& second = std::move(value)` 中哪些部分不可少？
+
+要看初始化表达式原本是什么值类别。局部引用变量的声明必须立即绑定对象，不能只写：
+
+```cpp
+int&& second; // 错误：引用必须初始化
+```
+
+如果初始化器是有名字的变量 `value`，表达式 `value` 是左值，不能直接绑定到 `int&&`。这时需要 `std::move` 或等价的显式转换：
+
+```cpp
+#include <utility>
+
+int value = 20;
+
+// int&& first = value;                  // 错误：左值不能绑定到 int&&
+int&& second = std::move(value);         // 正确：初始化器是将亡值
+int&& third = static_cast<int&&>(value); // 正确：与这里的 std::move 含义相同
+```
+
+但如果初始化器本来就是纯右值或将亡值，就不需要再写 `std::move`：
+
+```cpp
+int&& first = 20; // 20 是纯右值
+
+int&& get_reference();
+int&& second = get_reference(); // 返回 T&& 的调用表达式是将亡值
+```
+
+最重要的是，下面这句**没有创建新的 `int` 对象，也没有调用移动构造函数**：
+
+```cpp
+#include <cassert>
+#include <type_traits>
+#include <utility>
+
+int value = 20;
+int&& second = std::move(value); // second 只是 value 的引用别名
+
+static_assert(std::is_same<decltype(second), int&&>::value,
+              "second 的声明类型是 int&&");
+
+second = 30;
+assert(value == 30);
+assert(&second == &value); // 两个名字指向同一个 int 对象
+```
+
+与之不同，创建一个新的类对象时，才可能通过移动构造函数转移资源：
+
+```cpp
+#include <string>
+#include <utility>
+
+std::string source = "data";
+std::string&& alias = std::move(source); // 只建立引用别名，不移动资源
+std::string target = std::move(source);  // 创建新对象，调用移动构造函数
+```
+
+对于 `int` 这种不拥有动态资源的标量类型，所谓“移动”通常和复制数值没有区别，直接写 `int target = value;` 更清楚。`std::move` 的性能意义主要体现在拥有可转移资源的类型上。
+
+**一句话记忆：** `T&& ref = std::move(object)` 只是让引用绑定原对象；`T target = std::move(object)` 创建新对象时，才可能真正调用移动构造。
 
 [返回目录](#toc)
 
