@@ -37,6 +37,7 @@
 - [W036：复制构造与复制赋值分别有什么用](#w036)
 - [W037：`= default`、`= delete`、`override` 与 `final`](#w037)
 - [W038：静态数据成员为什么通常类内声明、类外定义？](#w038)
+- [W039：虚函数、运行时多态与虚函数表详解](#w039)
 
 
 <a id="w001"></a>
@@ -8521,5 +8522,377 @@ constexpr int Limits::minimum;  // 不再写初始化器
 **关联节点：** O6.1 静态数据成员、F3 声明/定义/翻译单元/链接、R1.2 静态存储期。
 
 **一句话记忆：** 类内声明让所有源文件认识这个共享成员，类外唯一定义才真正为它留出一份存储。
+
+[返回目录](#toc)
+
+<a id="w039"></a>
+## W039：虚函数、运行时多态与虚函数表详解
+
+**问题：** 虚函数怎样实现运行时多态？虚函数表和虚指针是什么？使用虚函数时有哪些必须掌握的规则与陷阱？
+
+**核心答案：** 基类把成员函数声明为 `virtual` 后，通过基类指针或引用进行未限定调用时，程序会根据对象的动态类型选择最终覆盖函数。C++11 保证这种动态分派行为，但不规定编译器必须使用虚函数表。主流编译器通常让多态对象保存虚指针，由它找到所属动态类型的虚函数表，再从对应槽位取得函数地址。
+
+### 1. 为什么需要虚函数？
+
+没有虚函数时，调用目标通常由表达式的静态类型决定：
+
+```cpp
+#include <iostream>
+
+class Base
+{
+public:
+    void speak() const { std::cout << "Base\n"; }
+};
+
+class Derived : public Base
+{
+public:
+    void speak() const { std::cout << "Derived\n"; }
+};
+
+void announce(const Base& object)
+{
+    object.speak(); // Base::speak
+}
+```
+
+`object` 的静态类型是 `const Base&`，因此这里调用 `Base::speak`。把基类函数声明为虚函数后：
+
+```cpp
+class Base
+{
+public:
+    virtual void speak() const { std::cout << "Base\n"; }
+    virtual ~Base() {}
+};
+
+class Derived : public Base
+{
+public:
+    void speak() const override { std::cout << "Derived\n"; }
+};
+```
+
+```cpp
+Derived derived;
+announce(derived); // 输出 Derived
+```
+
+`announce` 只依赖统一的 `Base` 接口，却能在运行时执行实际对象对应的派生实现。
+
+### 2. 静态类型和动态类型
+
+```cpp
+Derived derived;
+Base* pointer = &derived;
+Base& reference = derived;
+```
+
+| 表达式 | 静态类型 | 所指对象的动态类型 |
+|---|---|---|
+| `pointer` | `Base*` | `Derived` |
+| `*pointer` | `Base` 左值 | `Derived` |
+| `reference` | `Base` 左值 | `Derived` |
+
+- **静态类型：** 编译时从声明和表达式规则确定，用于名字查找、访问检查和重载决议等。
+- **动态类型：** 运行时对象实际所属的最派生类型，用于虚函数最终覆盖者的选择。
+
+```cpp
+pointer->speak();   // 虚调用，根据动态类型选择 Derived::speak
+reference.speak(); // 同上
+```
+
+虚函数不是“只能通过指针调用”。引用也能保留多态；真正要避免的是把派生对象按值复制成独立基类对象。
+
+### 3. 覆盖必须满足什么条件？
+
+```cpp
+class Base
+{
+public:
+    virtual void run(int value) const;
+};
+
+class Derived : public Base
+{
+public:
+    void run(int value) const override;
+};
+```
+
+覆盖时，函数名、参数类型、成员函数的 `const` 和引用限定符等必须满足覆盖规则。返回类型通常相同；类指针或引用存在受限的协变返回类型例外。
+
+下面漏写 `const`，所以不是覆盖：
+
+```cpp
+class Wrong : public Base
+{
+public:
+    void run(int value) override; // 编译错误：没有覆盖 Base::run(int) const
+};
+```
+
+C++11 推荐在派生类中写 `override`。即使不重复写 `virtual`，正确覆盖的函数仍然是虚函数；`override` 的价值是让编译器检查意图。
+
+### 4. 重载、隐藏和覆盖不是一回事
+
+```cpp
+class Base
+{
+public:
+    virtual void print(int);
+    void print(double);
+};
+
+class Derived : public Base
+{
+public:
+    void print(const char*); // 隐藏 Base 中名为 print 的整个重载集合
+};
+```
+
+- **重载：** 同一作用域中同名函数具有不同参数列表。
+- **隐藏：** 派生类出现同名声明后，基类同名集合可能在普通名字查找中被遮住。
+- **覆盖：** 派生函数与基类虚函数满足覆盖规则，参与动态分派。
+
+可用下面的写法把基类重载集合引入派生类：
+
+```cpp
+using Base::print;
+```
+
+### 5. 虚函数表和虚指针怎样工作？
+
+C++ 标准没有规定虚函数表。主流实现通常采用以下近似结构：
+
+```text
+多态对象
+┌──────────────┐
+│ vptr ──────────────┐
+│ Base 的数据   │     │
+│ Derived 的数据│     │
+└──────────────┘     │
+                     ▼
+              Derived 的虚函数表
+              ┌────────────────────┐
+              │ 析构相关入口       │
+              │ &Derived::speak    │
+              │ &Derived::run      │
+              │ RTTI/偏移等元数据  │  ← 具体布局由 ABI 决定
+              └────────────────────┘
+```
+
+一次虚调用可以粗略理解为：
+
+```text
+1. 从对象取得 vptr
+2. 从虚函数表的固定槽位取得最终覆盖函数地址
+3. 必要时调整 this
+4. 间接调用该函数
+```
+
+但不能据此作出标准级假设：
+
+- 标准不保证对象一定有且只有一个虚指针。
+- 标准不保证虚指针位于对象开头。
+- 标准不规定表中槽位顺序、析构入口数量、RTTI 位置或 `sizeof` 增量。
+- 多重继承、虚继承可能需要多个表、多个虚指针、偏移调整或 thunk。
+- 编译器发现动态类型确定时，可以去虚化并直接调用，只要可观察行为不变。
+
+所以“虚表机制”适合解释主流实现，不适合编写依赖具体对象布局的可移植代码。
+
+### 6. 每个对象都有一张虚函数表吗？
+
+通常不是。
+
+```text
+多个 Derived 对象
+object1 ─vptr─┐
+object2 ─vptr─┼──→ 同一套 Derived 虚函数表
+object3 ─vptr─┘
+```
+
+典型实现是同类对象共享表，每个多态对象只携带用于定位适当表的实现信息。函数代码也不会复制进每个对象。但这仍是常见 ABI 实现，不是 ISO C++11 强制的内存布局。
+
+### 7. 哪些调用会动态分派？
+
+普通未限定虚调用会动态分派：
+
+```cpp
+Base& object = derived;
+object.speak(); // 动态分派
+```
+
+显式限定类名会抑制虚分派：
+
+```cpp
+object.Base::speak(); // 明确调用 Base::speak
+```
+
+另外，虚函数的默认实参按调用点的静态类型选择，函数体却按动态类型选择：
+
+```cpp
+class Base
+{
+public:
+    virtual void show(int value = 1) const;
+};
+
+class Derived : public Base
+{
+public:
+    void show(int value = 2) const override;
+};
+
+Base& base = derived;
+base.show(); // 调用 Derived::show，但传入的默认值是 1
+```
+
+因此虚函数接口不应在不同层级给同一参数设置不同默认值。
+
+### 8. 构造和析构期间为什么不调用更深派生版本？
+
+```cpp
+class Base
+{
+public:
+    Base() { initialize(); }
+    virtual ~Base() { cleanup(); }
+    virtual void initialize();
+    virtual void cleanup();
+};
+```
+
+构造 `Derived` 时，执行 `Base` 构造函数的阶段，派生部分尚未完成构造；若调用 `Derived::initialize`，它可能访问尚不存在的派生成员。析构时派生部分又已经先被销毁。
+
+所以在某个类的构造或析构阶段，从该对象发起的虚调用不会分派到更深派生类的覆盖版本。不要依赖构造函数或析构函数中的虚调用完成派生类初始化与清理；在相应阶段调用纯虚函数还可能产生未定义行为。
+
+### 9. 为什么多态基类通常需要虚析构？
+
+```cpp
+class Base
+{
+public:
+    virtual ~Base() {}
+    virtual void run() = 0;
+};
+
+Base* pointer = new Derived;
+delete pointer; // 先执行 Derived 析构，再执行 Base 析构
+```
+
+如果 `Base::~Base` 不是虚函数，经 `Base*` 删除实际的 `Derived` 对象会产生未定义行为。派生部分可能得不到正确清理。
+
+设计选择通常是：
+
+- 需要经基类指针销毁：提供公有虚析构函数。
+- 明确禁止经基类删除：可以使用受保护的非虚析构函数。
+
+“类中只要有虚函数就必须无条件加虚析构”是方便但不完整的简化说法；真正判断条件是该接口是否允许多态销毁。
+
+### 10. 纯虚函数和抽象类
+
+```cpp
+class Shape
+{
+public:
+    virtual ~Shape() {}
+    virtual double area() const = 0;
+};
+```
+
+含有最终未被覆盖的纯虚函数的类是抽象类，不能直接创建对象，但可以声明它的指针和引用。派生类实现所有必需接口后才能成为具体类：
+
+```cpp
+class Circle : public Shape
+{
+public:
+    explicit Circle(double radius) : radius_(radius) {}
+
+    double area() const override
+    {
+        return 3.1415926 * radius_ * radius_;
+    }
+
+private:
+    double radius_;
+};
+```
+
+纯虚函数可以有类外定义；纯虚析构函数尤其必须提供定义，因为销毁派生对象时仍要执行基类析构部分。
+
+### 11. 对象切片会丢失多态
+
+```cpp
+void by_reference(const Base& object); // 保留实际动态类型
+void by_value(Base object);            // 把派生对象切成独立 Base 对象
+```
+
+```cpp
+Derived derived;
+Base copied = derived; // 只复制 Base 子对象
+```
+
+`copied` 已经是一个真正的 `Base` 对象，不再包含 `Derived` 部分。之后即使调用虚函数，也只能体现 `Base` 的动态类型。
+
+异构多态集合通常保存智能指针，而不是按值保存基类：
+
+```cpp
+std::vector<std::unique_ptr<Shape> > shapes;
+```
+
+C++11 没有 `std::make_unique`，创建时可写 `std::unique_ptr<Shape>(new Circle(2.0))`。
+
+### 12. 性能和空间成本怎样看？
+
+主流实现中可能存在：
+
+- 每个多态对象携带虚指针等实现数据，增加对象大小和对齐需求。
+- 虚调用通常是一次间接调用，可能降低普通内联和分支预测效果。
+- 优化器若能确定动态类型，可以进行去虚化，成本可能消失。
+- 构造、析构时实现需要维护适合当前阶段的动态分派状态。
+
+成本必须通过目标平台的基准测试判断。不能笼统声称虚函数“非常慢”，也不能假定它永远只有一次指针解引用。
+
+### 13. 虚函数与 ABI 边界
+
+虚函数表布局属于 ABI。跨动态库公开 C++ 多态类时，下列变化可能破坏二进制兼容：
+
+- 增加、删除、重排虚函数。
+- 改变继承关系或虚继承结构。
+- 改变函数签名、限定符、调用约定或异常相关约定。
+- 使用不兼容的编译器、标准库、运行库或构建选项。
+
+如果插件接口需要长期稳定，常用固定版本的 C ABI 函数表、工厂/销毁函数或受控的抽象接口，并明确规定同一侧分配和释放资源。
+
+### 14. 常见错误清单
+
+```text
+同名函数
+≠ 自动覆盖虚函数
+
+使用 Base* 或 Base&
+≠ 所有成员调用都会动态分派，只有虚函数参与
+
+按值传递派生对象
+≠ 保留多态，它会发生对象切片
+
+基类有虚函数
+≠ 析构函数自动变成虚函数
+
+virtual 保证动态分派
+≠ 标准保证某种固定 vtable/vptr 布局
+
+构造函数里调用虚函数
+≠ 调用尚未构造完成的派生覆盖版本
+
+静态成员函数、构造函数、成员函数模板
+≠ 可以声明为虚函数
+```
+
+**关联节点：** O8.3 名字隐藏、O8.4 虚函数与动态绑定、O8.5 `override/final`、O8.6 抽象类、O8.7 虚析构、O8.8 对象切片、O9.2 对象布局与 ABI。
+
+**一句话记忆：** `virtual` 保证按对象的动态类型选择最终覆盖函数；虚函数表只是主流实现手段，虚析构、`override`、引用/指针传递和避免切片才是写对多态代码的关键。
 
 [返回目录](#toc)
