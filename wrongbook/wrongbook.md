@@ -81,6 +81,7 @@
 - [W039：虚函数、运行时多态与虚函数表详解](#w039)
 - [W040：`volatile` 是什么，为什么不能用于线程同步？](#w040)
 - [W041：`std::list` 与 `std::deque` 的底层结构有什么区别？](#w041)
+- [W042：怎样系统理解 C++11 Lambda？](#w042)
 
 
 <a id="w001"></a>
@@ -9544,5 +9545,457 @@ list 支持双向迭代
 **关联节点：** S4.2 `vector`、S4.3 `deque`、S4.4 `list`、S4.5 `forward_list`、S9.2 `vector/deque` 失效、S9.3 链表、S2.2 迭代器类别、X39 链表与真实性能。
 
 **一句话记忆：** 双向节点链通常是 `list`，内部索引表加多个连续块通常是 `deque`，单块连续序列才是 `vector`；结构模型帮助理解，但最终以 C++11 的接口、复杂度和失效规则为准。
+
+[返回目录](#toc)
+
+<a id="w042"></a>
+## W042：怎样系统理解 C++11 Lambda？
+
+**问题：** Lambda 的完整语法、捕获、闭包对象、`mutable`、返回类型、函数指针转换以及生命周期应怎样串起来理解？
+
+**核心答案：** Lambda 表达式是在使用位置定义一个可调用对象的语法。编译器为每个 Lambda 表达式生成一个唯一、无法直接拼写名字的**闭包类型**；求值该表达式会创建一个**闭包对象**，捕获的数据构成它的状态，调用时则执行该类型的 `operator()`。捕获解决“闭包从外围取得什么状态”，参数解决“每次调用传入什么数据”，生命周期决定“保存的引用或 `this` 以后是否仍然有效”。
+
+### 1. 完整语法和各部分职责
+
+```cpp
+[capture](parameters) mutable exception-specification -> return-type
+{
+    body
+}
+```
+
+这是一张语法结构图，不是可以原样编译的代码。各部分含义如下：
+
+| 部分 | 作用 | C++11 示例 |
+| --- | --- | --- |
+| `[capture]` | 指定怎样取得外围状态；不可省略 | `[]`、`[x]`、`[&x]`、`[=]` |
+| `(parameters)` | 每次调用时接收的参数 | `(int value)` |
+| `mutable` | 允许非 `const` 调用运算符修改按值捕获的副本 | `mutable` |
+| 异常说明 | 说明调用的异常承诺 | `noexcept` |
+| `-> return-type` | 显式指定返回类型 | `-> double` |
+| `{ body }` | 调用时执行的函数体；不可省略 | `{ return value * 2; }` |
+
+除捕获列表和函数体外，其余部分都可以在满足规则时省略。一个包含各可选位置的合法 C++11 例子是：
+
+```cpp
+int offset = 1;
+
+auto next = [offset](int value) mutable noexcept -> int
+{
+    ++offset;              // 修改闭包内部的副本
+    return value + offset;
+};
+```
+
+关键顺序是：`mutable` 和异常说明写在参数列表之后，尾置返回类型写在异常说明之后。C++11 也有动态异常说明，但它已被弃用；新代码通常只需要理解和使用 `noexcept`。如果被声明为 `noexcept` 的调用让异常逃出，程序会调用 `std::terminate`。
+
+### 2. Lambda 不是普通函数，而是闭包对象
+
+```cpp
+int factor = 3;
+
+auto multiply = [factor](int value) -> int
+{
+    return value * factor;
+};
+
+int result = multiply(4); // 12
+```
+
+可以用下面这个**近似模型**理解它：
+
+```cpp
+class CompilerGeneratedClosure
+{
+public:
+    explicit CompilerGeneratedClosure(int captured)
+        : factor_(captured)
+    {
+    }
+
+    int operator()(int value) const
+    {
+        return value * factor_;
+    }
+
+private:
+    int factor_;
+};
+```
+
+该类只是教学近似，不是标准规定的真实展开代码。标准保证的是 Lambda 的可观察行为，而不是闭包成员的名称、顺序、大小、对齐方式或引用捕获的具体存储方式。
+
+必须区分：
+
+- **Lambda 表达式：** 源码中的 `[factor](int value) { ... }`。
+- **闭包类型：** 编译器为这个表达式生成的唯一、未命名类类型。
+- **闭包对象：** 求值 Lambda 表达式得到的对象，例如 `multiply`。
+- **调用运算符：** 调用 `multiply(4)` 时执行的 `operator()`。
+
+不同位置写出的两个 Lambda 即使正文完全相同，也具有不同的闭包类型：
+
+```cpp
+auto first = []() { return 1; };
+auto second = []() { return 1; };
+
+// first = second; // 错误：两个闭包类型不同
+```
+
+### 3. 捕获方式总表
+
+捕获列表主要从 Lambda 的 **reaching scope（可到达作用域）** 中选择变量：从包含 Lambda 的最内层块向外查找，到当前函数的形参作用域为止。实际可捕获的典型对象是 Lambda 所在位置已经声明并且可见、具有自动存储期的局部变量和外层函数形参。
+
+```cpp
+void process(int parameter)
+{
+    int local = 10;
+
+    auto operation = [parameter, &local]()
+    {
+        // parameter 是按值捕获的外层函数形参。
+        // local 是按引用捕获的外层局部变量。
+        return parameter + local;
+    };
+
+    int later = 20;
+    // operation 的捕获列表不能使用 later：创建 operation 时它尚不可见。
+}
+```
+
+这里的“捕获”不是从任何地方复制任意表达式，还要区分以下边界：
+
+- 命名空间变量、全局变量和静态局部变量具有静态存储期，不作为普通捕获成员进入闭包；Lambda 可以直接按名字访问它们。
+- 非静态数据成员不是独立的外层局部变量，C++11 通过显式或隐式捕获 `this` 指针后访问成员，而不是写 `[member]` 捕获整个对象。
+- 声明在 Lambda 之后的变量、已经离开作用域的名字或在当前位置本来就不可见的名字，不能被捕获。
+- C++11 捕获列表选择的是变量或 `this`，不能写 `[x = expression]` 从任意表达式创建新成员；初始化捕获是 C++14。
+- 捕获一个指针变量时，按值捕获只复制该指针值，按引用捕获引用的是该指针变量；两者都不会自动复制指针所指对象。
+- `[=]` 和 `[&]` 只是为 Lambda 函数体中按标准规则实际需要捕获的外层自动变量设置默认方式，不会把当前作用域里的所有变量全部复制或全部引用。
+
+| 写法 | 含义 | 主要风险或用途 |
+| --- | --- | --- |
+| `[]` | 不捕获外围自动局部变量 | 无状态计算，可转兼容函数指针 |
+| `[x]` | 按值捕获 `x` | 创建闭包时保存快照 |
+| `[&x]` | 按引用捕获 `x` | 访问或修改原对象；必须保证其仍存活 |
+| `[=]` | 实际用到的可捕获变量默认按值 | 方便，但可能隐藏复制成本和 `this` 风险 |
+| `[&]` | 实际用到的可捕获变量默认按引用 | 方便，但闭包逃逸后容易悬空 |
+| `[=, &sum]` | 默认按值，`sum` 按引用 | 只让指定状态回写外部 |
+| `[&, limit]` | 默认按引用，`limit` 按值 | 为指定值保存快照 |
+| `[this]` | 捕获当前对象的 `this` 指针 | 可以访问成员；对象先销毁时指针悬空 |
+
+有默认捕获时，显式例外不能重复默认方式：`[=, &sum]` 和 `[&, limit]` 合法，而 `[=, value]`、`[&, &value]` 不合法。
+
+#### 捕获后为什么能直接写外层变量名？
+
+语法上，Lambda 函数体继续写原来的变量名；编译器根据捕获方式让这个名字访问闭包状态：
+
+```cpp
+int value = 10;
+
+auto by_value = [value]() mutable
+{
+    return ++value; // 修改闭包内部保存的副本
+};
+
+auto by_reference = [&value]()
+{
+    return ++value; // 修改外部原对象
+};
+```
+
+| 捕获方式 | 函数体中写 `value` 的实际含义 |
+| --- | --- |
+| `[value]` | 访问闭包创建时保存的副本；默认 `operator() const`，写 `mutable` 后可以修改副本 |
+| `[&value]` | 访问外部原对象；可以修改，但原对象必须仍然存活 |
+| `[this]` 后写 `member` | 近似于经捕获的指针访问 `this->member`；当前对象必须仍然存活 |
+| 全局变量或静态变量 | 按普通名字查找直接访问，不依靠捕获成员 |
+
+所以更准确的说法是“捕获后可以直接**访问**该名字”，不是“调用变量”。只有变量本身保存可调用对象时，写成 `variable()` 才是在调用它。以上闭包成员模型帮助理解语义，但闭包的真实成员布局仍由实现决定。
+
+### 4. 按值捕获发生在创建闭包时
+
+```cpp
+#include <cassert>
+
+int main()
+{
+    int value = 10;
+    auto snapshot = [value]() { return value; };
+
+    value = 20;
+
+    assert(snapshot() == 10); // 闭包保存的是创建时的副本
+    assert(value == 20);
+}
+```
+
+捕获发生在执行 Lambda 表达式并创建闭包对象的时候，不是在以后调用 `snapshot()` 的时候。复制闭包对象通常也会复制其按值捕获状态，所以捕获大对象可能有复制成本；被捕获类型是否可复制也会影响闭包能否被复制。
+
+按值捕获某个指针只复制指针值，不会复制它所指向的对象；按值捕获 `std::shared_ptr` 会复制共享所有权句柄，也不等于深拷贝对象。因此“按值捕获”不自动等于“与外部世界完全隔离”。
+
+### 5. 按引用捕获访问原对象，但不延长生命周期
+
+```cpp
+#include <cassert>
+
+int main()
+{
+    int total = 0;
+    auto add = [&total](int value)
+    {
+        total += value;
+    };
+
+    add(3);
+    assert(total == 3);
+}
+```
+
+按引用捕获适合在原变量仍存活时同步调用，并需要观察或修改原状态的场景。它不会让原变量活得更久：
+
+```cpp
+#include <functional>
+
+std::function<int()> make_bad_reader()
+{
+    int value = 10;
+    return [&value]() { return value; }; // 编译可以通过
+}
+
+// make_bad_reader()(); // 未定义行为：value 已经销毁
+```
+
+`std::function` 复制的是闭包；如果闭包内部保存引用语义，复制包装器不会把被引用对象变成副本。返回闭包、长期注册回调、放入队列、交给异步任务或分离线程时，都必须重新审查捕获对象的所有权和生命周期。
+
+### 6. `[this]`、`[=]` 和 `[&]` 在成员函数中的陷阱
+
+```cpp
+#include <functional>
+
+class Counter
+{
+public:
+    Counter() : value_(0) {}
+
+    std::function<void()> callback()
+    {
+        return [this]() { ++value_; };
+    }
+
+private:
+    int value_;
+};
+```
+
+C++11 的 `[this]` 捕获的是 `this` 指针，不是整个当前对象的副本。成员函数中使用 `[=]` 或 `[&]` 并访问非静态成员时，也可能隐式捕获 `this`；即使写的是 `[=]`，复制的仍是指针，不是每个成员的独立快照。因此，只要闭包可能比当前对象活得更久，就可能出现悬空 `this`。
+
+还要记住：
+
+- `[&this]` 非法，`this` 不能按这种语法捕获。
+- C++11 没有 `[*this]`；按值捕获当前对象是 C++17 才加入的形式。
+- 捕获 `this` 不会让对象自动获得共享所有权；若设计确实需要延长生命周期，必须显式采用合适的所有权方案。
+
+### 7. 为什么 `operator()` 默认是 `const`，`mutable` 改变什么？
+
+按值捕获生成的闭包调用运算符默认不能修改捕获副本，可近似理解为 `operator() const`：
+
+```cpp
+int start = 0;
+
+// auto wrong = [start]() { return ++start; }; // 错误：不能修改捕获副本
+
+auto counter = [start]() mutable -> int
+{
+    return ++start;
+};
+```
+
+`mutable` 让闭包可以修改自己的按值捕获副本，并在连续调用之间保存内部状态：
+
+```cpp
+int first = counter();  // 1
+int second = counter(); // 2
+```
+
+外部的 `start` 仍为 `0`。`mutable` 不会把按值捕获变成按引用捕获，也不会让多线程共享同一个闭包对象变得安全。按引用捕获访问的是外部对象，即使 `operator()` 本身默认是 `const`，仍可能经该引用修改外部状态。
+
+### 8. 参数和严格 C++11 返回类型边界
+
+Lambda 参数与普通函数参数一样可以按值、引用或指针传递：
+
+```cpp
+#include <string>
+
+auto length = [](const std::string& text) -> std::size_t
+{
+    return text.size();
+};
+```
+
+严格 C++11 中，参数必须写出可确定的类型，不能使用 `[](auto value) { ... }`。Lambda 参数也不能具有默认实参。
+
+省略返回类型时，最稳妥的可移植 C++11 形式是函数体只有一个返回表达式：
+
+```cpp
+auto square = [](int value) { return value * value; };
+```
+
+存在分支、多个返回路径或复杂语句时，应明确写尾置返回类型：
+
+```cpp
+auto convert = [](int value) -> double
+{
+    if (value > 0)
+        return value;
+    return 0.5;
+};
+```
+
+不要把编译器在更新标准模式下支持的宽松返回推导倒推成 C++11 规则；C++14 才放宽了 Lambda 返回类型推导。
+
+### 9. 无捕获 Lambda 可以转成兼容函数指针
+
+```cpp
+int (*square_pointer)(int) = [](int value) -> int
+{
+    return value * value;
+};
+```
+
+无捕获 Lambda 不需要携带外围状态，因此 C++11 为它提供到兼容普通函数指针的隐式转换。返回类型和参数类型必须兼容。有任何捕获的 Lambda 都不能直接进行这种转换，因为普通函数指针没有地方保存闭包状态。
+
+“无捕获”不代表不能访问任何外部名字：全局变量和静态变量无需捕获，但访问它们仍可能引入共享状态、数据竞争或测试困难。与真正的 C 接口交互时还要检查调用约定、链接和接口契约，不能只凭这个转换假设跨语言 ABI 一定兼容。
+
+### 10. `auto`、模板和 `std::function` 怎样选择？
+
+| 保存或传递方式 | 特点 | 适用场景 |
+| --- | --- | --- |
+| `auto operation = lambda;` | 保留具体闭包类型，通常最直接 | 局部保存单个 Lambda |
+| 函数模板参数 `F function` | 编译期保留调用类型，便于内联 | 泛型算法或性能敏感接口 |
+| 普通函数指针 | 无闭包状态，接口简单 | 无捕获 Lambda 和兼容旧式回调 |
+| `std::function<R(Args...)>` | 用固定类型擦除不同可调用对象的具体类型 | 运行时更换回调、容器存储、成员字段 |
+
+```cpp
+#include <functional>
+
+std::function<int(int)> operation = [](int value)
+{
+    return value * 2;
+};
+```
+
+`std::function` 可能带来间接调用、额外存储、复制甚至动态分配，标准不保证采用某种“小对象优化”或固定开销。C++11 的 `std::function` 目标需要满足可复制要求，因此不能直接保存只可移动、不可复制的可调用对象。空的 `std::function` 被调用时会抛出 `std::bad_function_call`。
+
+### 11. Lambda 与标准算法
+
+Lambda 很适合在算法调用点表达局部规则：
+
+```cpp
+#include <algorithm>
+#include <vector>
+
+int main()
+{
+    std::vector<int> values{4, 1, 3, 2};
+
+    std::sort(values.begin(), values.end(),
+              [](int left, int right)
+              {
+                  return left < right;
+              });
+}
+```
+
+常见用途包括排序比较、查找条件、筛选、遍历处理和回调适配。算法通常可以复制传入的谓词或函数对象，所以不要假定所有调用都发生在调用者手中的原闭包对象上。比较器还必须满足算法要求的关系；能调用不代表语义一定正确。
+
+### 12. C++11 中怎样写递归 Lambda？
+
+闭包类型无法在自己的初始化器中直接命名，C++11 常先声明 `std::function`，再让 Lambda 按引用捕获这个包装器：
+
+```cpp
+#include <functional>
+
+int main()
+{
+    std::function<int(int)> factorial;
+    factorial = [&factorial](int value) -> int
+    {
+        return value <= 1 ? 1 : value * factorial(value - 1);
+    };
+
+    return factorial(5) == 120 ? 0 : 1;
+}
+```
+
+赋值完成后才能调用；`factorial` 必须在所有递归调用期间存活。这个闭包引用了局部包装器，不能不加设计地把它返回并在包装器销毁后使用。深递归仍可能耗尽调用栈。把自身作为参数传给泛型 Lambda 的常见写法依赖 C++14，不是 C++11 基线。
+
+### 13. 闭包大小、复制和性能不能靠猜
+
+常见实现会把按值捕获保存为闭包成员，并为引用捕获保存某种能访问原对象的状态，但 ISO C++11 不规定固定布局。因此不能写出以下推论：
+
+```text
+捕获两个 int
+⇒ 闭包大小必定是 8 字节
+
+按引用捕获
+⇒ 标准规定闭包内部一定保存一个普通指针
+
+无捕获 Lambda
+⇒ 闭包对象大小必定为 0
+
+使用 std::function
+⇒ 必定分配堆内存，或必定不会分配
+```
+
+闭包对象仍要服从对象模型、对齐和复制规则。是否发生内联、是否分配以及调用成本取决于具体类型、库实现、优化条件和使用方式；性能敏感时应测量，而不是从语法外观下结论。
+
+### 14. C++11 没有这些后续 Lambda 功能
+
+```cpp
+// [](auto value) { return value; }       // 泛型 Lambda：C++14
+// [x = expression]() { return x; }       // 初始化捕获：C++14
+// [item = std::move(item)]() { }         // 移动初始化捕获：C++14
+// [*this]() { }                          // 捕获当前对象副本：C++17
+// constexpr auto function = []() { };    // constexpr Lambda：C++17
+```
+
+C++11 普通按值捕获从已有局部变量复制状态，不能使用初始化捕获把 `std::unique_ptr` 移入闭包。需要这种所有权时，可设计显式函数对象、调整接口所有权，或在确实符合语义时捕获可复制的共享所有权句柄；不要偷偷提高语言标准而仍声称代码是 C++11。
+
+### 15. 易错点
+
+```text
+Lambda
+≠ 没有类型的匿名代码块；它会产生闭包对象
+
+[x]
+≠ 调用时读取 x；它在创建闭包时保存快照
+
+[&x]
+≠ 延长 x 的生命周期
+
+[=] 出现在成员函数中
+≠ 按值复制整个当前对象；使用成员时通常捕获 this 指针
+
+mutable
+≠ 修改外部原变量，也不提供线程安全
+
+无捕获 Lambda
+⇒ 可以转换为签名兼容的函数指针
+
+有捕获 Lambda
+≠ 普通函数指针；可考虑具体闭包类型或 std::function
+
+std::function 复制闭包
+≠ 把闭包内部引用指向的对象也复制一份
+
+闭包被返回、排队或异步执行
+⇒ 必须重新检查引用、指针和 this 的生命周期
+
+编译器接受 [](auto value)
+≠ 它属于 C++11
+```
+
+**关联节点：** L1 Lambda 基础、L2 捕获与状态、L3 可调用对象、L4 生命周期与递归、L5 Lambda 与算法、O2.3 `const` 成员函数、O4 对象生存期、F6 `auto`、S10 标准算法、MEM-32 数据竞争。
+
+**一句话记忆：** Lambda 是带 `operator()` 的匿名闭包对象；捕获决定状态如何进入闭包，`mutable` 只放开内部副本，引用和 `this` 不获得额外寿命，严格 C++11 还要避开泛型 Lambda、初始化捕获和 `constexpr` Lambda。
 
 [返回目录](#toc)
