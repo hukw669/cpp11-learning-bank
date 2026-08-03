@@ -2704,6 +2704,87 @@ std::move(const_object)
 ≠ 必须手写 std::move
 ```
 
+### 15. `std::move` 总结卡
+
+#### 它是什么？
+
+`std::move` 定义在 `<utility>` 中。它本质上是一次无条件的类型转换，把表达式转换成将亡值，使接受右值引用的重载有机会被选择：
+
+```cpp
+std::move(object)
+```
+
+可以近似理解为：
+
+```cpp
+static_cast<typename std::remove_reference<T>::type&&>(object)
+```
+
+`std::move` 自己不复制、不搬运、不释放资源，也不会结束对象生存期。
+
+#### 真正发生移动的完整过程
+
+```cpp
+std::string source = "hello";
+std::string target = std::move(source);
+```
+
+```text
+source                         有名字，是左值表达式
+std::move(source)              转换成将亡值
+std::string 的重载决议         选择移动构造函数
+移动构造函数                   真正接管资源
+source                         仍然存在，稍后仍会析构
+```
+
+如果类型没有可用的移动操作，`std::move` 后可能退回复制，也可能因没有可行函数而编译失败。对 `int` 这类没有资源所有权的类型，“移动”通常与复制数值没有区别。
+
+#### 什么时候使用？
+
+| 场景 | 做法 |
+|---|---|
+| 当前代码明确不再需要某个左值原来的资源 | `consume(std::move(value));` |
+| 实现移动构造或移动赋值，接管来源成员 | 对来源成员使用 `std::move` |
+| 将 `std::unique_ptr` 的所有权交给另一个对象 | `target = std::move(source);` |
+| 泛型包装器要保留调用者原来的值类别 | 使用 `std::forward<T>`，不是无条件 `std::move` |
+| 返回普通局部对象 | 通常直接 `return value;`，不要习惯性添加 `std::move` |
+
+#### 移动后的对象怎样使用？
+
+对标准库对象，除非该类型另有更强保证，移动后的对象通常处于“有效但未指定”状态：
+
+```cpp
+std::string source = "hello";
+std::string target = std::move(source);
+
+source = "again"; // 可以重新赋值
+source.clear();    // 可以执行满足其前置条件的操作
+// 不要假定 source 此时一定为空
+```
+
+自定义类型移动后的状态由该类型自己的接口契约决定。无论是哪种类型，都不能因为写过 `std::move` 就认为对象已经销毁。
+
+#### `const` 对象为什么通常移动不了？
+
+```cpp
+const std::string source = "hello";
+std::string target = std::move(source);
+```
+
+这里 `std::move(source)` 的结果是 `const std::string&&`。普通移动构造通常需要修改来源对象，因此接收 `std::string&&`，不能绑定 `const std::string&&`；最终通常选择接受 `const std::string&` 的复制构造。
+
+#### 最短判断流程
+
+使用 `std::move(value)` 前依次问：
+
+1. 后面是否不再依赖 `value` 原来的具体内容？
+2. 目标操作是否真的提供移动重载？
+3. `value` 是否不是 `const`？
+4. 这里是否是普通资源转交，而不是完美转发？
+5. 这里是否不是可能受 NRVO 优化的局部返回值？
+
+全部判断清楚后再使用，不要为了“提高性能”到处机械添加 `std::move`。
+
 **一句话记忆：** 将亡值是“允许复用资源的表达式”；`std::move` 负责把路标指向移动重载，移动函数负责真正搬资源，`std::forward` 则负责在泛型代码中保留来路。
 
 [返回目录](#toc)
