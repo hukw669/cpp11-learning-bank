@@ -2541,25 +2541,9 @@ std::string target = std::move(source); // 通常调用复制构造，而不是�
 
 所以 `std::move` 不是“强制移动”命令。`const` 常常意味着不允许移动其内部资源。
 
-### 7. `T&&` 不一定是转发引用
+### 7. 引用折叠有什么实际用途？
 
-只有发生类型推导，并且形式正好是 `T&&` 时，它才可能是转发引用：
-
-```cpp
-void consume(std::string&& value); // 普通右值引用，不推导 T
-
-template<class T>
-void relay(T&& value);             // 转发引用：T 由实参推导
-```
-
-对转发引用调用 `relay` 时：
-
-| 实参 | `T` 的推导结果 | 折叠后的形参类型 |
-|---|---|---|
-| `std::string` 左值 | `std::string&` | `std::string& &&` → `std::string&` |
-| `std::string` 右值 | `std::string` | `std::string&&` |
-
-引用折叠只有一条简记规则：**只要组合里出现 `&`，结果就是 `&`；只有 `&&` 和 `&&` 组合才是 `&&`。**
+引用折叠是在模板推导、类型别名、`decltype` 等机制间接形成“引用的引用”时，把组合结果规范化成合法引用类型的编译期规则。它不会移动、复制或创建对象，也没有运行时开销：
 
 ```text
 T&  &  → T&
@@ -2567,6 +2551,72 @@ T&  && → T&
 T&& &  → T&
 T&& && → T&&
 ```
+
+简记为：**只要组合中出现左值引用 `&`，结果就是 `&`；只有两边都是 `&&`，结果才是 `&&`。**
+
+#### 用途一：让转发引用同时接收左值和右值
+
+只有模板形参是对 **cv 未限定的模板参数** 直接写成 `T&&`，并且 `T` 在本次调用中参与推导时，它才是转发引用：
+
+```cpp
+#include <string>
+#include <vector>
+
+void consume(std::string&& value); // 普通右值引用，不推导 T
+
+template<class T>
+void relay(T&& value);             // 转发引用：T 由实参推导
+
+template<class T>
+void relay_const(const T&& value); // 普通右值引用：T&& 外还有 const
+
+template<class T>
+void take_vector(std::vector<T>&&); // 普通右值引用：形参不是直接的 T&&
+```
+
+对转发引用调用 `relay` 时：
+
+| 调用实参 | `T` 的推导结果 | 代入后的组合 | 折叠后的形参类型 |
+|---|---|---|---|
+| `Widget` 左值 | `Widget&` | `Widget& &&` | `Widget&` |
+| `const Widget` 左值 | `const Widget&` | `const Widget& &&` | `const Widget&` |
+| `Widget` 右值 | `Widget` | `Widget&&` | `Widget&&` |
+
+引用折叠让一个函数模板适配左值、`const` 左值和右值，并把调用者原来的值类别编码在推导结果 `T` 中。这正是完美转发的类型基础。
+
+#### 用途二：让 `auto&&` 适配不同表达式
+
+`auto&&` 在发生推导时也应用相同规则：
+
+```cpp
+int object = 0;
+
+auto&& first = object; // auto 推导为 int&，最终类型为 int&
+auto&& second = 0;     // auto 推导为 int，最终类型为 int&&
+```
+
+变量名表达式始终是左值，所以表达式 `second` 仍然是左值；这里的 `Widget&&` 是变量类型，不是变量名的值类别。范围 `for` 中的 `auto&&` 也常用于避免复制，并适配普通元素引用和某些代理对象：
+
+```cpp
+for (auto&& element : container) {
+    process(element);
+}
+```
+
+是否允许修改元素，由最终折叠出的类型及其 `const` 性质决定。
+
+#### 用途三：组合类型别名和 `decltype`
+
+```cpp
+using LvalueReference = int&;
+using Result = LvalueReference&&; // int& && 折叠为 int&
+
+int object = 0;
+using Observed = decltype((object)); // int&
+using Combined = Observed&&;         // int& && 折叠为 int&
+```
+
+模板元编程经常通过别名、类型萃取或 `decltype` 得到已经带引用的类型。引用折叠保证后续再添加 `&` 或 `&&` 时，结果统一且可预测。
 
 ### 8. 为什么完美转发必须使用 `std::forward`？
 
@@ -2593,6 +2643,19 @@ void relay(T&& value) {
 - `std::forward<T>(value)`：当原实参是左值时仍传左值，原实参是右值时才传右值。
 
 所以普通业务代码需要明确放弃资源时使用 `std::move`；模板包装器需要原样转交参数时使用 `std::forward`。
+
+完美转发依赖三步共同完成：
+
+```text
+模板实参推导
+    ↓ 把原实参的左值或右值身份编码进 T
+引用折叠
+    ↓ 形成正确的最终引用类型
+std::forward<T>
+    ↓ 在调用处恢复原来的值类别
+```
+
+**引用折叠一句话记忆：** 左值引用具有“保留效应”，组合中只要出现 `&`，最终就是 `&`；它让泛型代码能够记住并恢复实参原来的值类别。
 
 ### 9. `decltype` 怎样观察值类别？
 
@@ -2784,6 +2847,83 @@ std::string target = std::move(source);
 5. 这里是否不是可能受 NRVO 优化的局部返回值？
 
 全部判断清楚后再使用，不要为了“提高性能”到处机械添加 `std::move`。
+
+### 16. 有没有不写 `std::move` 就产生的将亡值？
+
+有。最典型的是**调用一个返回类型为 `T&&` 的函数**：
+
+```cpp
+class Widget
+{
+};
+
+Widget&& acquire();
+
+acquire(); // 调用表达式是 Widget 类型的将亡值
+```
+
+假设 `T` 是对象类型，函数调用表达式的值类别由返回类型决定：
+
+| 函数返回类型 | 调用表达式的值类别 |
+|---|---|
+| `T` | 纯右值 |
+| `T&` | 左值 |
+| `T&&` | 将亡值 |
+
+因此下面两个表达式都属于右值，但不是同一种基础值类别：
+
+```cpp
+Widget make_widget(); // 按值返回
+Widget&& get_widget();
+
+make_widget(); // 纯右值 prvalue
+get_widget();  // 将亡值 xvalue
+```
+
+还可以由核心语言的显式转换直接得到将亡值：
+
+```cpp
+Widget object;
+static_cast<Widget&&>(object); // 将亡值
+```
+
+`std::move(object)` 本质上就是把这种转换包装成更清晰、更通用的标准库工具。
+
+当对象表达式是将亡值时，通过它访问非静态、非引用数据成员，该成员访问表达式也是将亡值：
+
+```cpp
+struct Box
+{
+    Widget value;
+};
+
+Box box;
+static_cast<Box&&>(box).value; // value 表达式是将亡值
+```
+
+但下面这些不是将亡值：
+
+```cpp
+Widget temporary = Widget{};
+
+Widget{};  // C++11：纯右值，不是将亡值
+temporary; // 有名字：左值
+
+Widget&& reference = Widget{};
+reference; // 引用变量有名字，该表达式仍是左值
+```
+
+函数返回 `T&&` 时还必须保证所引用对象依然存活。下面虽然使调用表达式成为将亡值，但返回了悬空引用：
+
+```cpp
+Widget&& bad()
+{
+    Widget local;
+    return static_cast<Widget&&>(local); // 危险：函数结束后 local 被销毁
+}
+```
+
+这段函数定义可能通过编译，但返回的是悬空引用，调用者使用所指对象会产生未定义行为。所以“表达式是将亡值”和“引用的对象仍然有效”是两个不同问题。
 
 **一句话记忆：** 将亡值是“允许复用资源的表达式”；`std::move` 负责把路标指向移动重载，移动函数负责真正搬资源，`std::forward` 则负责在泛型代码中保留来路。
 
