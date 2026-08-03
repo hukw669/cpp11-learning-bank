@@ -38,6 +38,7 @@
 - [W037：`= default`、`= delete`、`override` 与 `final`](#w037)
 - [W038：静态数据成员为什么通常类内声明、类外定义？](#w038)
 - [W039：虚函数、运行时多态与虚函数表详解](#w039)
+- [W040：`volatile` 是什么，为什么不能用于线程同步？](#w040)
 
 
 <a id="w001"></a>
@@ -8628,6 +8629,7 @@ public:
 
 [返回目录](#toc)
 
+
 <a id="w038"></a>
 ## W038：静态数据成员为什么通常类内声明、类外定义？
 
@@ -9115,5 +9117,167 @@ virtual 保证动态分派
 **关联节点：** O8.3 名字隐藏、O8.4 虚函数与动态绑定、O8.5 `override/final`、O8.6 抽象类、O8.7 虚析构、O8.8 对象切片、O9.2 对象布局与 ABI。
 
 **一句话记忆：** `virtual` 保证按对象的动态类型选择最终覆盖函数；虚函数表只是主流实现手段，虚析构、`override`、引用/指针传递和避免切片才是写对多态代码的关键。
+
+[返回目录](#toc)
+
+<a id="w040"></a>
+## W040：`volatile` 是什么，为什么不能用于线程同步？
+
+**问题：** “valecate” 是什么？这里按 C++ 上下文理解为 `volatile`；如果想问的是 `validate`，它只是英文“验证、校验”，不是 C++ 关键字。
+
+**核心答案：** `volatile` 是类型限定符。通过 `volatile` 左值进行的访问属于程序的可观察行为，实现必须依照 C++ 抽象机的规则以及自身文档处理这些访问，不能把它们当成普通的、对外界无影响的访问随意消除。但是 ISO C++11 没有因此保证具体硬件指令、缓存一致性、操作原子性或线程间的执行顺序。`volatile` 不能建立 happens-before，不能修复数据竞争，也不能代替 `std::atomic` 或互斥量。
+
+### 1. `volatile` 修饰的究竟是什么？
+
+```cpp
+volatile unsigned int status = 0;
+
+unsigned int first = status;  // 一次 volatile 读取
+unsigned int second = status; // 又一次 volatile 读取
+status = 1;                   // 一次 volatile 写入
+```
+
+`volatile` 修饰的是对象类型；真正具有特殊意义的是**通过 volatile 左值进行的访问**。上面两次读取是两个独立的完整表达式，实现不能简单地假设 `status` 从未被普通代码修改，于是只读取一次并重复使用结果。
+
+需要把两层含义分开：
+
+- ISO C++11 规定 volatile 访问属于抽象机可观察行为，并要求实现按相应规则处理。
+- “什么动作构成一次访问”以及一次访问对应哪条机器指令等细节与具体实现有关。
+
+因此，`volatile` 不是“永远直接访问物理内存”的跨平台承诺，也不是“关闭这个对象的所有优化”。编译器仍可进行不改变规定的可观察行为的优化。
+
+### 2. 为什么它常见于内存映射设备？
+
+嵌入式平台经常把设备寄存器映射到特定地址。读取寄存器可能清除标志，连续写入也可能代表不同命令，所以访问本身不能被普通优化规则随意删除。
+
+平台代码可能出现下面的形式：
+
+```cpp
+#include <cstdint>
+
+// 地址、宽度、对齐、权限和屏障要求全部由目标平台规定。
+volatile std::uint32_t* const device_status =
+    reinterpret_cast<volatile std::uint32_t*>(0x40000000u);
+
+std::uint32_t read_status()
+{
+    return *device_status;
+}
+```
+
+这只是 MMIO 的典型平台写法，不是可在任意 ISO C++11 环境运行的代码。整数到指针的结果、该地址是否有效、访问宽度，以及是否还需要内存屏障，必须查编译器、操作系统和芯片文档。仅添加 `volatile` 不会自动提供这些硬件语义。
+
+### 3. 为什么不能用它做线程同步？
+
+下面的代码仍然错误：
+
+```cpp
+volatile bool ready = false;
+int data = 0;
+
+// 线程 A
+data = 42;
+ready = true;
+
+// 线程 B
+while (!ready) {}
+int result = data;
+```
+
+如果两个线程并发访问 `ready`，至少一个线程进行写入，而访问之间没有标准同步关系，就会产生数据竞争，程序行为未定义。`volatile` 不提供：
+
+- 原子读写保证；
+- 线程间可见性保证；
+- 内存顺序或 happens-before；
+- 对一组操作的互斥保护。
+
+即使某个平台上一个普通整数的单次读写恰好不可分割，`++counter` 仍是“读取、计算、写回”多个步骤，也不因 `counter` 是 volatile 就成为原子操作。
+
+### 4. 正确的线程通信怎样写？
+
+单个独立状态可以使用 `std::atomic`：
+
+```cpp
+#include <atomic>
+
+std::atomic<bool> ready(false);
+int data = 0;
+
+void publish()
+{
+    data = 42;
+    ready.store(true, std::memory_order_release);
+}
+
+int consume()
+{
+    while (!ready.load(std::memory_order_acquire)) {}
+    return data;
+}
+```
+
+当 acquire 读取到 release 写入的值时，两者建立同步关系，`publish` 中先前对 `data` 的写入对 `consume` 可见。如果多个变量必须共同保持不变量，通常应使用同一个互斥量保护，而不是把每个变量分别声明为 `volatile` 或 `atomic`。
+
+| 工具 | 解决的问题 | 不自动解决的问题 |
+| --- | --- | --- |
+| `volatile` | 特殊环境需要保留的可观察访问 | 原子性、线程同步、互斥 |
+| `std::atomic<T>` | 对单个原子对象的不可分割访问与内存顺序 | 多对象复杂不变量 |
+| `std::mutex` | 临界区互斥，可共同保护多个对象 | 硬件寄存器访问语义 |
+
+### 5. 与信号处理有什么关系？
+
+C++11 为 `volatile std::sig_atomic_t` 留有非常狭窄的异步信号处理用途：信号处理函数可以给这类对象赋值，让普通执行流程在之后检查标志。它不意味着任意 volatile 类型都能安全地在信号处理函数中读写，也不把 volatile 变成通用的线程同步机制。
+
+```cpp
+#include <csignal>
+
+volatile std::sig_atomic_t signal_seen = 0;
+
+extern "C" void handle_signal(int)
+{
+    signal_seen = 1; // 信号处理函数中只设置简单标志
+}
+```
+
+信号处理函数可执行的操作受到标准严格限制；平台还可能施加更多要求。线程间通信仍应使用线程同步设施，不能把这个例外推广到多线程代码。
+
+### 6. `const volatile` 是否矛盾？
+
+不矛盾：
+
+```cpp
+const volatile unsigned int status_register = 0;
+```
+
+- `const` 表示程序不能通过这个名字普通赋值。
+- `volatile` 表示每次通过相应 volatile 左值访问时，都必须按 volatile 规则处理。
+
+这适合表达“程序只读，但外部设备可能改变”的寄存器视图。它依然不能保证具体设备语义，实际声明通常来自平台提供的头文件。
+
+### 7. 常见误区
+
+```text
+volatile
+≠ 原子操作
+
+volatile
+≠ 多线程可见性或内存屏障
+
+volatile 变量参与 ++
+≠ 整个读改写操作不可分割
+
+循环反复读取 volatile 标志
+≠ 与另一个线程建立同步关系
+
+声明 MMIO 指针为 volatile
+≠ ISO C++11 保证该地址、宽度和硬件时序有效
+
+给所有变量加 volatile
+≠ 禁止全部编译器优化
+```
+
+**关联节点：** MEM-26 `volatile` 的真正含义、MEM-30 内存模型、MEM-31 happens-before、MEM-32 数据竞争、MEM-37 原子类型、MEM-38 内存序、MEM-47 互斥量。
+
+**一句话记忆：** `volatile` 约束特殊访问的优化处理，不负责线程同步；线程共享状态用 `std::atomic` 或互斥量，设备语义查目标平台文档。
 
 [返回目录](#toc)
