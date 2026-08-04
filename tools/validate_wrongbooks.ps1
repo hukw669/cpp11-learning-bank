@@ -43,27 +43,30 @@ function Add-MalformedIdErrors {
         [string]$AnchorPattern
     )
 
-    foreach ($match in [regex]::Matches($Text, '(?m)^- \[([^：\]]+)：[^\]]+\]\(#([^)]+)\)\s*$')) {
+    $tocHeading = [regex]::Match($Text, '(?m)^## [^\r\n]*错题目录[^\r\n]*$')
+    if (-not $tocHeading.Success) {
+        $errors.Add("$BookName 错题本缺少错题目录标题")
+        return
+    }
+
+    $tocStart = $tocHeading.Index + $tocHeading.Length
+    $firstEntryAnchor = [regex]::Match($Text.Substring($tocStart), '(?m)^<a id="[^"]+"></a>\s*$')
+    $tocEnd = if ($firstEntryAnchor.Success) { $tocStart + $firstEntryAnchor.Index } else { $Text.Length }
+    $tocText = $Text.Substring($tocStart, $tocEnd - $tocStart)
+
+    foreach ($match in [regex]::Matches($tocText, '(?m)^- \[([^：\]]+)：[^\]]+\]\(#([^)]+)\)\s*$')) {
         $navigationId = $match.Groups[1].Value
         $anchorId = $match.Groups[2].Value
-        if ($navigationId.StartsWith($Prefix, [System.StringComparison]::OrdinalIgnoreCase) -or $anchorId.StartsWith($AnchorPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
-            if ($navigationId -notmatch "^$IdPattern$" -or $anchorId -notmatch "^$AnchorPattern$") {
-                $errors.Add("$BookName 错题本的目录包含格式错误的 ID：$navigationId / #$anchorId")
-            }
+        if ($navigationId -notmatch "^$IdPattern$" -or $anchorId -notmatch "^$AnchorPattern$") {
+            $errors.Add("$BookName 错题本的目录包含格式错误的 ID：$navigationId / #$anchorId")
         }
     }
 
-    foreach ($match in [regex]::Matches($Text, '(?m)^<a id="([^"]+)"></a>\s*$')) {
+    foreach ($match in [regex]::Matches($Text.Substring($tocEnd), '(?m)^<a id="([^"]+)"></a>\s*\r?\n\s*^## ([^：\s]+)：.+$')) {
         $anchorId = $match.Groups[1].Value
-        if ($anchorId.StartsWith($AnchorPrefix, [System.StringComparison]::OrdinalIgnoreCase) -and $anchorId -notmatch "^$AnchorPattern$") {
-            $errors.Add("$BookName 错题本的锚点包含格式错误的 ID：$anchorId")
-        }
-    }
-
-    foreach ($match in [regex]::Matches($Text, '(?m)^## ([^：\s]+)：.+$')) {
-        $headingId = $match.Groups[1].Value
-        if ($headingId.StartsWith($Prefix, [System.StringComparison]::OrdinalIgnoreCase) -and $headingId -notmatch "^$IdPattern$") {
-            $errors.Add("$BookName 错题本的正文包含格式错误的 ID：$headingId")
+        $headingId = $match.Groups[2].Value
+        if ($anchorId -notmatch "^$AnchorPattern$" -or $headingId -notmatch "^$IdPattern$" -or $anchorId -ne $headingId.ToLowerInvariant()) {
+            $errors.Add("$BookName 错题本的锚点/正文包含格式错误或不一致的 ID：$anchorId / $headingId")
         }
     }
 }
