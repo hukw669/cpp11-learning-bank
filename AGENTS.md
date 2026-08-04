@@ -12,6 +12,8 @@
 
 跨学科问题只保留一个**完整的规范条目**：以问题主要考查的学科为主错题本；其他学科只写相对链接指向该条目，不复制完整答案。OS 与网络相关题在生成前还必须标明稳定图谱节点（`OS1–OS10` 或 `NET1–NET10`）。
 
+题库也按学科隔离命名空间：现有顶层 `questions/batch_NN_SSS_EEE.md` 与 001–690 题号只属于 C++；未来 OS 题只能写入 `questions/os/batch_OS_NN_SSS_EEE.md`，网络题只能写入 `questions/network/batch_NET_NN_SSS_EEE.md`，并各自在本学科从 001 起编号。当前 `tools/validate_learning_bank.ps1` 只验证 C++ 顶层题库与 533/690 基线；在专用校验器获批准前，不得生成 OS/NET 题目或宣称其已有覆盖率。
+
 ## 1. 主 Agent 与错题本 Agent 的职责
 
 - 用户提出技术问题时，主 agent 必须立即给出简洁、直接的答案，不等待错题本落盘、验证、提交或推送。
@@ -73,8 +75,8 @@ writer 不能仅依赖主 agent 的答案或其他 agent 的成功报告，必�
 
 1. 对新增或修改的 C++ 示例使用 `-std=c++11 -Wall -Wextra -pedantic` 做编译或 `-fsyntax-only` 检查；故意错误的示例要验证其失败原因符合描述。纯 OS/网络条目不伪造 C++ 编译检查，但必须核对协议/平台来源与边界。
 2. 检查 Markdown 代码围栏成对。
-3. 检查目录链接、`wNNN` 锚点、`WNNN` 标题和返回目录链接一一对应且无重复。
-4. 运行 `pwsh -NoProfile -File .\tools\validate_learning_bank.ps1` 与 `pwsh -NoProfile -File .\tools\validate_wrongbooks.ps1`。
+3. 按目标错题本检查目录链接、锚点、标题和返回目录链接一一对应且无重复：C++ 为 `wNNN`/`WNNN`，操作系统为 `oswNNN`/`OSWNNN`，网络为 `netwNNN`/`NETWNNN`；必须运行 `pwsh -NoProfile -File .\tools\validate_wrongbooks.ps1` 作为统一结构校验。
+4. 运行 `pwsh -NoProfile -File .\tools\validate_learning_bank.ps1`；若任务涉及错题本，再运行上一项指定的 `pwsh -NoProfile -File .\tools\validate_wrongbooks.ps1`。
 5. 运行 `git diff --check`；提交前还要运行 `git diff --cached --check`。
 6. 检查只修改获授权文件，内容中没有本机路径、令牌或个人信息。
 
