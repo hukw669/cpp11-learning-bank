@@ -40,35 +40,77 @@ IP 只提供无连接、尽力而为的数据报服务，不建立或维护应�
 
 ### 2. 应用层规定数据语义和交互流程
 
-应用程序不能只把一串字节交给对方，还必须共同约定这些字节的含义。应用协议通常规定：
+应用程序不能只把一串字节交给对方，还必须共同约定这些字节的含义。应用层通常规定：
 
-- 客户端和服务器的角色，以及消息先后顺序。
-- 请求、响应、命令、状态码和数据格式。
-- 资源或服务怎样命名，例如域名、URL 和邮箱地址。
-- 认证、缓存、错误表示及扩展方式。
+- **角色与交互顺序：** 谁是客户端、服务器或消息代理，谁先发送，何时应答。
+- **消息格式与边界：** 请求、响应、命令、字段、正文和编码怎样组织。
+- **业务语义：** `GET`、DNS `A` 记录、SMTP `MAIL FROM` 等操作分别表示什么。
+- **命名与定位：** URL、域名、邮箱地址、MQTT 主题等怎样表示资源或服务。
+- **状态与错误：** 是否保持会话、怎样缓存、超时、重试以及表达错误。
+- **安全要求：** 是否认证对端、加密内容、校验完整性；这些能力可能由应用协议自身或 TLS 等安全层提供。
 
-常见协议可以这样定位：
+应用层不负责选择 IP 下一跳，也不能仅凭“使用 TCP”就获得业务层的恰好一次处理。传输层解决字节或报文怎样端到端运送，应用层仍要定义消息边界、幂等性、事务和失败恢复。
 
-| 协议 | 作用 | 常见传输边界 |
-| --- | --- | --- |
-| DNS | 查询域名、地址、邮件服务器等资源记录 | 通常使用 UDP 或 TCP 端口 53；完整实现必须支持 TCP |
-| DHCPv4 | 分配 IPv4 地址租约并下发前缀/掩码、默认网关、DNS 等配置 | UDP 服务器端口 67、客户端端口 68 |
-| HTTP | 定义资源、请求方法、响应状态和字段等 Web 语义 | HTTP/1.1、HTTP/2 通常基于 TCP；HTTP/3 基于 QUIC |
-| HTTPS | HTTP 使用安全传输，获得机密性、完整性和对端认证 | TCP 上的 TLS，或集成 TLS 的 QUIC |
-| FTP | 文件传输，控制连接与数据连接分离 | TCP |
-| SMTP | 提交和转发邮件 | TCP |
-| POP3、IMAP | 下载或同步管理邮箱中的邮件 | TCP |
-| SSH | 加密远程登录和其他安全通道 | 通常基于 TCP |
+#### 2.1 常见协议、传输依赖与默认端口
 
-“常见端口”是默认约定，不等于协议只能使用该端口。端口属于传输层命名空间，应用层协议可以由配置、服务发现或代理映射到其他端口。
+| 协议 | 主要作用 | 常见承载 | 典型端口 |
+| --- | --- | --- | --- |
+| HTTP | Web 资源请求、响应与 API 语义 | HTTP/1.1、HTTP/2 通常经 TCP；HTTP/3 经 QUIC/UDP | 80；安全部署常用 443 |
+| HTTPS | HTTP 使用安全传输 | HTTP/1.1、HTTP/2：TLS/TCP；HTTP/3：集成 TLS 的 QUIC/UDP | 443（TCP 或 UDP 取决于版本） |
+| DNS | 查询名称对应的资源记录 | UDP 与 TCP；也可封装为 DoT、DoH | 53/UDP、53/TCP；DoT 常用 853/TCP，DoH 常用 443 |
+| DHCPv4 | 分配 IPv4 租约并下发网络参数 | UDP，可在尚无可用地址时广播，并可经中继转发 | 服务器 67、客户端 68 |
+| DHCPv6 | 为 IPv6 主机提供地址或其他配置 | UDP，协议流程与 DHCPv4 不同 | 服务器 547、客户端 546 |
+| FTP | 文件传输，控制连接与数据连接分离 | TCP | 控制连接 21；主动模式的数据连接常从服务器 20 发起，被动模式由服务器另选端口 |
+| SFTP | 在 SSH 上进行文件访问与传输 | SSH/TCP | 通常 22 |
+| SMTP | 提交、发送和邮件服务器间转发 | TCP，可使用 STARTTLS 或隐式 TLS | 中继 25、提交 587、隐式 TLS 提交 465 |
+| POP3 | 从邮箱服务器读取/下载邮件 | TCP，可升级 TLS 或使用隐式 TLS | 110；隐式 TLS 995 |
+| IMAP | 在服务器端管理邮箱并进行多设备同步 | TCP，可升级 TLS 或使用隐式 TLS | 143；隐式 TLS 993 |
+| SSH | 安全远程登录、命令执行、隧道和多路通道 | TCP | 22 |
+| WebSocket | 建立长期、全双工、带消息帧的通道 | RFC 6455 基线是在 TCP 上握手后传输；`wss` 再使用 TLS | `ws` 常随 HTTP 用 80，`wss` 常随 HTTPS 用 443 |
+| MQTT | 面向物联网的代理式发布/订阅消息 | 需要有序、无损、双向字节流，常用 TCP、TLS/TCP 或 WebSocket | 1883；TLS 常用 8883 |
+| NTP | 网络时间同步 | 通常 UDP | 123 |
+| SNMP | 网络设备查询、管理和通知 | 通常 UDP | 代理 161、Trap/Inform 162 |
+| TFTP | 简单文件传输，无 FTP 的完整会话能力 | UDP | 初始请求 69，后续传输使用协商出的端口 |
 
-#### DNS 不只是“域名换 IP”
+表中的端口是 IANA 注册或常见部署的**默认约定**，不是协议身份，更不是强制绑定。HTTP 可以监听 `8080`，SSH 可以监听其他端口；反过来，看到 443 也不能仅凭端口断定负载一定是某个具体 HTTP 版本。真正的协议识别还可能依赖配置、URI、DNS 服务发现、TLS ALPN、代理或报文内容。
+
+#### 2.2 HTTP 与 HTTPS：语义、版本和安全承载要分开
+
+HTTP 是无状态的应用层请求—响应协议。“无状态”指协议语义不要求服务器记住上一条请求，不代表网站不能用 Cookie、Token、服务端 Session 或数据库建立登录状态。HTTP 主要规定：
+
+- 方法，如 `GET`、`POST`、`PUT`、`PATCH`、`DELETE`。
+- 目标资源、字段、内容表示和缓存条件。
+- `2xx`、`3xx`、`4xx`、`5xx` 等响应状态语义。
+- 代理、网关、缓存等中间节点怎样转发消息。
+
+HTTP 的核心语义可跨版本保持，但线上的消息编码和承载不同：
+
+```text
+HTTP/1.1 ─→ TCP ─→ IP
+HTTP/2   ─→ TCP ─→ IP        （在一个连接中复用多个流）
+HTTP/3   ─→ QUIC ─→ UDP ─→ IP（QUIC 提供可靠流、多路复用和安全）
+```
+
+因此，“HTTP 只能使用 TCP”不成立。HTTP/1.1、HTTP/2 常跑在 TCP 上，而 [RFC 9114](https://www.rfc-editor.org/rfc/rfc9114.html) 定义的 HTTP/3 使用 QUIC；QUIC 虽以 UDP 为承载，却自行提供可靠流、拥塞控制和加密等能力。
+
+HTTPS 也不是 TCP、UDP 之外的一种传输协议，更准确的理解是“通过安全连接访问 `https` 资源的 HTTP”：
+
+```text
+HTTP/1.1 或 HTTP/2 + TLS + TCP
+HTTP/3 + QUIC（集成 TLS 1.3）+ UDP
+```
+
+TLS 提供机密性、完整性和身份认证。Web 场景通常认证服务器；是否用客户端证书实现双向认证取决于部署策略。端口 443 是默认约定，不是 HTTPS 的定义。
+
+#### 2.3 DNS：名称系统不只是“域名换 IP”
 
 DNS 是分布式命名系统，记录类型不只有 IPv4 地址 `A`，还包括 IPv6 地址 `AAAA`、别名 `CNAME`、邮件交换 `MX`、名称服务器 `NS` 等。客户端通常先询问递归解析器，解析器再使用缓存并查询相应权威服务器。
 
-把 DNS 简写为“UDP 53”不完整：常见小查询经 UDP 完成，但响应被截断、区域传送以及其他需要可靠长消息的场景会使用 TCP；[RFC 7766](https://www.rfc-editor.org/rfc/rfc7766.html) 要求完整 DNS 实现支持 TCP。DNS over TLS、DNS over HTTPS 等又是其他安全承载方式，不能从端口 53 一条规则推出全部现代 DNS 流量。
+一次常见解析路径是“桩解析器 → 递归解析器 → 根、顶级域和权威服务器”。递归解析器可按 TTL 缓存结果，因此修改权威记录不保证所有客户端立刻看到新值；缓存命中、负缓存、多个权威回答和 CDN 调度也会让实际结果不同。
 
-#### DHCP 解决“主机一开始怎样获得配置”
+把 DNS 简写为“UDP 53”不完整：普通查询常优先使用 UDP，但响应被截断后可重试 TCP，区域传送使用 TCP，[RFC 7766](https://www.rfc-editor.org/rfc/rfc7766.html) 还要求通用 DNS 实现支持 TCP。现代部署也可能使用 DNS over TLS（DoT）或 DNS over HTTPS（DoH），因此不能从端口 53 推断全部 DNS 流量。
+
+#### 2.4 DHCP：主机一开始怎样获得网络配置
 
 DHCPv4 客户端刚接入网络时可能还没有可用 IPv4 地址，典型过程常概括为：
 
@@ -76,16 +118,75 @@ DHCPv4 客户端刚接入网络时可能还没有可用 IPv4 地址，典型过�
 DHCPDISCOVER → DHCPOFFER → DHCPREQUEST → DHCPACK
 ```
 
-服务器不仅能提供地址，还能提供租期、子网掩码、默认路由器和 DNS 服务器等参数。历史上的 RARP 只能围绕链路层地址查询协议地址，能力有限；现代主机配置早已主要使用 BOOTP/DHCP 等机制，不能把 RARP 当作当前常规方案。
+服务器不仅能提供地址，还能提供租期、子网掩码、默认路由器和 DNS 服务器等参数。客户端早期报文可使用广播；当服务器不在同一广播域时，路由器或专用设备可作为 DHCP Relay 转发请求。DHCP 给出的是有期限的租约，客户端需要续租；它不等于永久占有地址。
 
-#### HTTP 语义与承载版本要分开
+DHCPv6 是独立协议，使用 UDP 546/547，并非把 DHCPv4 的广播流程原样搬到 IPv6。IPv6 还可能使用无状态地址自动配置（SLAAC），实际网络可只用 SLAAC、只用 DHCPv6，或组合使用。历史上的 RARP 能力有限，不能当作当前常规主机配置方案。
 
-HTTP 定义请求方法、目标资源、字段、状态码和表示等语义，但不同版本采用不同承载：
+#### 2.5 FTP、FTPS 与 SFTP：名字相似，协议族不同
 
-- HTTP/1.1 和 HTTP/2 通常在 TCP 连接上传输；HTTPS 再加入 TLS。
-- HTTP/3 把相同的 HTTP 核心语义映射到 QUIC 流；QUIC 运行在 UDP 之上并集成 TLS 1.3 安全握手。
+FTP 基于 TCP，并把控制与数据分开：控制连接通常连服务器 21 端口，数据连接则根据模式另行建立。
 
-所以“HTTP 必定使用 TCP”已经不是完整结论。HTTP 是应用层语义，TCP 或 QUIC 是承载它的传输机制。
+- **主动模式：** 服务器从自己的数据端主动连接客户端指定端口，容易受到客户端 NAT 或防火墙限制。
+- **被动模式：** 客户端再连接服务器告知的数据端口，更适合常见 NAT/防火墙部署。
+- **FTPS：** FTP 再使用 TLS，仍保留 FTP 的协议模型。
+- **SFTP：** SSH File Transfer Protocol，运行在 SSH 通道上，通常只需一条 TCP 22 连接；它既不是 FTP，也不是“FTP 开启 TLS”。
+
+传统 FTP 本身不加密控制命令、口令和文件内容，不能因为它使用 TCP 就认为传输安全。协议规范允许的模式不代表所有部署都会开放；服务器、防火墙和 NAT 必须共同配置数据端口范围，实际 FTP 可用性才成立。
+
+#### 2.6 邮件协议：SMTP 管发送，POP3/IMAP 管邮箱访问
+
+```text
+发件客户端 ──SMTP 提交──→ 发件服务器
+发件服务器 ──SMTP 中继──→ 收件服务器
+收件客户端 ──POP3 或 IMAP──→ 访问收件服务器邮箱
+```
+
+- **SMTP** 是“推送”协议：25 常用于服务器间中继，587 常用于经过认证的邮件提交，465 常用于隐式 TLS 提交。三者的使用策略由服务商和部署配置决定。
+- **POP3** 模型简单，侧重读取或下载邮箱内容；是否从服务器删除邮件由客户端行为决定，不能简单等同于“下载后必删”。
+- **IMAP** 支持服务器端文件夹、标志、搜索和多设备状态同步，更适合让邮件长期保留在服务器。
+- 110/143 是传统明文起始端口，协议可通过 STARTTLS 升级；995/993 是常见隐式 TLS 端口。是否允许明文认证属于部署安全策略，不是看到协议名就能断定。
+
+#### 2.7 SSH 与 SFTP：一条安全连接中的多种通道
+
+SSH 通常先通过 TCP 22 建立连接，再协商算法和密钥、认证服务器，随后认证用户并复用多个逻辑通道。它可承载交互式终端、远程命令、端口转发和 SFTP 子系统。
+
+“SSH 已加密”不等于“服务器一定可信”：客户端仍需核对主机密钥或证书。首次连接盲目接受未知主机密钥会削弱对中间人攻击的防护；密码、公钥或其他用户认证方式则是另一个阶段。
+
+#### 2.8 WebSocket：握手后是双向消息通道
+
+经典 WebSocket 按 [RFC 6455](https://www.rfc-editor.org/rfc/rfc6455.html) 在 TCP 上建立。客户端先发 HTTP/1.1 Upgrade 握手，服务器以 `101 Switching Protocols` 接受；成功后，同一连接改用 WebSocket 帧，双方都能随时发送文本、二进制和控制消息，不再是一问一答的普通 HTTP 消息流。
+
+```text
+HTTP Upgrade 握手 → WebSocket 数据帧 ↔ WebSocket 数据帧
+```
+
+`ws` 常借用 80，`wss` 常借用 TLS 保护的 443。现代规范也定义了在 HTTP/2、HTTP/3 上引导 WebSocket 的方式，所以“WebSocket 永远只能 HTTP/1.1 Upgrade”是对经典部署的简化，而不是完整协议边界。它适合聊天、协作、行情和游戏等双向实时场景；连接保活、断线重连和消息补偿仍需应用自行设计。
+
+#### 2.9 MQTT：Broker 中转的发布—订阅协议
+
+MQTT 客户端不直接按对方地址订阅消息，而是连接 Broker，并围绕层级主题发布或订阅：
+
+```text
+传感器 ──PUBLISH home/room1/temp──→ Broker ──分发──→ 订阅者
+```
+
+- QoS 0 表示至多一次，可能丢失。
+- QoS 1 表示至少一次，接收方必须容忍重复。
+- QoS 2 在 MQTT 协议交换范围内实现恰好一次交付，但不自动保证业务数据库事务只执行一次。
+
+[MQTT 5.0 规范](https://docs.oasis-open.org/mqtt/mqtt/v5.0/mqtt-v5.0.html) 要求底层提供有序、无损、双向字节流，但不强制唯一的具体传输协议；TCP、TLS 和 WebSocket 都可满足常见部署。1883 与 8883 分别是常见非 TLS 和 TLS 端口。MQTT 运行在 WebSocket 上时，外层端口还可能是 80/443，因此也不能只看端口识别 MQTT。
+
+#### 2.10 怎样判断应用协议应使用哪种承载
+
+协议设计不会单纯按“TCP 可靠、UDP 不可靠”二选一，还要综合：
+
+- 是否需要有序字节流，还是需要保留独立报文边界。
+- 丢包时应重传还是宁愿丢弃旧数据以降低时延。
+- 是否需要多路复用、拥塞控制、连接迁移和加密。
+- 是否必须穿过浏览器、代理、NAT 或企业防火墙。
+- 应用层能否自行实现请求编号、重试、去重和超时。
+
+标准定义可互操作的报文与行为；监听端口、是否开放明文、认证方式、超时、缓存和代理拓扑属于部署选择。回答面试题时应先说规范边界，再说明“常见部署通常怎样做”。
 
 ### 3. 传输层为什么是应用层与 IP 层的桥梁？
 
@@ -296,6 +397,13 @@ NAT 与防火墙不是同一个概念。状态映射可能顺带阻止未匹配�
 - [RFC 2131：DHCP](https://www.rfc-editor.org/rfc/rfc2131.html)
 - [RFC 9110：HTTP 语义](https://www.rfc-editor.org/rfc/rfc9110.html)
 - [RFC 9114：HTTP/3](https://www.rfc-editor.org/rfc/rfc9114.html)
+- [IANA：Service Name and Transport Protocol Port Number Registry](https://www.iana.org/assignments/service-names-port-numbers/service-names-port-numbers.xhtml)
+- [RFC 959：FTP](https://www.rfc-editor.org/rfc/rfc959.html)
+- [RFC 4251：SSH 协议架构](https://www.rfc-editor.org/rfc/rfc4251.html)
+- [RFC 5321：SMTP](https://www.rfc-editor.org/rfc/rfc5321.html)、[RFC 8314：邮件提交与访问使用 TLS](https://www.rfc-editor.org/rfc/rfc8314.html)
+- [RFC 1939：POP3](https://www.rfc-editor.org/rfc/rfc1939.html)、[RFC 9051：IMAP4rev2](https://www.rfc-editor.org/rfc/rfc9051.html)
+- [RFC 6455：WebSocket](https://www.rfc-editor.org/rfc/rfc6455.html)、[RFC 8441：在 HTTP/2 中引导 WebSocket](https://www.rfc-editor.org/rfc/rfc8441.html)、[RFC 9220：在 HTTP/3 中引导 WebSocket](https://www.rfc-editor.org/rfc/rfc9220.html)
+- [OASIS：MQTT Version 5.0](https://docs.oasis-open.org/mqtt/mqtt/v5.0/mqtt-v5.0.html)
 - [RFC 826：ARP](https://www.rfc-editor.org/rfc/rfc826.html)
 - [RFC 4861：IPv6 Neighbor Discovery](https://www.rfc-editor.org/rfc/rfc4861.html)
 - [RFC 792 / RFC 4443：ICMP 与 ICMPv6](https://www.rfc-editor.org/rfc/rfc792.html)、[ICMPv6](https://www.rfc-editor.org/rfc/rfc4443.html)
@@ -303,7 +411,9 @@ NAT 与防火墙不是同一个概念。状态映射可能顺带阻止未匹配�
 - [RFC 1191 / RFC 8201：IPv4 与 IPv6 路径 MTU 发现](https://www.rfc-editor.org/rfc/rfc1191.html)、[IPv6 PMTUD](https://www.rfc-editor.org/rfc/rfc8201.html)
 - [RFC 3022：传统 NAT 与 NAPT](https://www.rfc-editor.org/rfc/rfc3022.html)
 
-**关联主题：** 网络分层、DNS、DHCP、HTTP/HTTPS、TCP/UDP/QUIC、IPv4/IPv6、CIDR、路由与转发、ARP/NDP、ICMP、MTU/PMTU、NAT/NAPT。
+**关联节点：** NET2（应用层协议）、NET3（UDP、TCP、QUIC 与端口）、NET4（TCP 可靠性）、NET9（代理与部署边界）。
+
+**关联主题：** 网络分层、DNS、DHCP、HTTP/HTTPS、FTP/SFTP、SMTP/POP3/IMAP、SSH、WebSocket、MQTT、TCP/UDP/QUIC、IPv4/IPv6、CIDR、路由与转发、ARP/NDP、ICMP、MTU/PMTU、NAT/NAPT。
 
 **一句话记忆：** 应用层解释数据，传输层用端口交给进程，IP 按目的地址选择下一跳，链路层每跳重新封帧；端到端 IP 通常不变、逐跳链路地址会变，而可靠性必须由所选上层机制明确提供。
 
