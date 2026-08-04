@@ -33,12 +33,74 @@ function Add-DuplicateError {
     }
 }
 
+function Get-MarkdownStructureText {
+    param(
+        [string]$BookName,
+        [string]$Text
+    )
+
+    $builder = [System.Text.StringBuilder]::new($Text.Length)
+    $insideFence = $false
+    $fenceCharacter = ''
+    $fenceLength = 0
+
+    foreach ($lineMatch in [regex]::Matches($Text, '[^\r\n]*(?:\r\n|\n|\r|$)')) {
+        if ($lineMatch.Length -eq 0) {
+            continue
+        }
+
+        $lineWithEnding = $lineMatch.Value
+        $newline = if ($lineWithEnding.EndsWith("`r`n")) {
+            "`r`n"
+        }
+        elseif ($lineWithEnding.EndsWith("`n")) {
+            "`n"
+        }
+        elseif ($lineWithEnding.EndsWith("`r")) {
+            "`r"
+        }
+        else {
+            ''
+        }
+        $line = $lineWithEnding.Substring(0, $lineWithEnding.Length - $newline.Length)
+        $openingFence = [regex]::Match('', '$^')
+
+        if (-not $insideFence) {
+            $openingFence = [regex]::Match($line, '^[ ]{0,3}(`{3,}|~{3,})')
+            if ($openingFence.Success) {
+                $insideFence = $true
+                $fenceSequence = $openingFence.Groups[1].Value
+                $fenceCharacter = $fenceSequence.Substring(0, 1)
+                $fenceLength = $fenceSequence.Length
+            }
+        }
+        else {
+            $closingPattern = '^[ ]{0,3}' + [regex]::Escape($fenceCharacter) + '{' + $fenceLength + ',}[ \t]*$'
+            if ($line -match $closingPattern) {
+                $insideFence = $false
+            }
+        }
+
+        if ($insideFence -or $openingFence.Success) {
+            [void]$builder.Append(' ' * $line.Length)
+            [void]$builder.Append($newline)
+        }
+        else {
+            [void]$builder.Append($lineWithEnding)
+        }
+    }
+
+    if ($insideFence) {
+        $errors.Add("$BookName 错题本存在未闭合的 Markdown $fenceCharacter 围栏")
+    }
+
+    $builder.ToString()
+}
+
 function Add-MalformedIdErrors {
     param(
         [string]$BookName,
         [string]$Text,
-        [string]$Prefix,
-        [string]$AnchorPrefix,
         [string]$IdPattern,
         [string]$AnchorPattern
     )
@@ -47,6 +109,14 @@ function Add-MalformedIdErrors {
     if (-not $tocHeading.Success) {
         $errors.Add("$BookName 错题本缺少错题目录标题")
         return
+    }
+
+    $tocAnchors = @([regex]::Matches($Text, '(?m)^<a id="toc"></a>\s*$'))
+    if ($tocAnchors.Count -ne 1) {
+        $errors.Add("$BookName 错题本的 toc 锚点数量为 $($tocAnchors.Count)，应为 1")
+    }
+    elseif ($tocAnchors[0].Index -gt $tocHeading.Index) {
+        $errors.Add("$BookName 错题本的 toc 锚点必须位于错题目录标题之前")
     }
 
     $tocStart = $tocHeading.Index + $tocHeading.Length
@@ -62,11 +132,18 @@ function Add-MalformedIdErrors {
         }
     }
 
-    foreach ($match in [regex]::Matches($Text.Substring($tocEnd), '(?m)^<a id="([^"]+)"></a>\s*\r?\n\s*^## ([^：\s]+)：.+$')) {
+    $entryText = $Text.Substring($tocStart)
+    foreach ($match in [regex]::Matches($entryText, '(?m)^<a id="([A-Za-z]+[0-9]+)"></a>\s*$')) {
         $anchorId = $match.Groups[1].Value
-        $headingId = $match.Groups[2].Value
-        if ($anchorId -notmatch "^$AnchorPattern$" -or $headingId -notmatch "^$IdPattern$" -or $anchorId -ne $headingId.ToLowerInvariant()) {
-            $errors.Add("$BookName 错题本的锚点/正文包含格式错误或不一致的 ID：$anchorId / $headingId")
+        if ($anchorId -notmatch "^$AnchorPattern$") {
+            $errors.Add("$BookName 错题本的锚点包含格式错误的 ID：$anchorId")
+        }
+    }
+
+    foreach ($match in [regex]::Matches($entryText, '(?m)^## ([A-Za-z]+[0-9]+)：.+$')) {
+        $headingId = $match.Groups[1].Value
+        if ($headingId -notmatch "^$IdPattern$") {
+            $errors.Add("$BookName 错题本的正文包含格式错误的 ID：$headingId")
         }
     }
 }
@@ -79,17 +156,17 @@ foreach ($book in $books) {
     }
 
     $text = Get-Content -LiteralPath $path -Raw
+    $structureText = Get-MarkdownStructureText -BookName $book.Name -Text $text
     $idPattern = "$($book.Prefix)[0-9]{3}"
     $anchorPattern = "$($book.AnchorPrefix)[0-9]{3}"
 
-    Add-MalformedIdErrors -BookName $book.Name -Text $text -Prefix $book.Prefix -AnchorPrefix $book.AnchorPrefix -IdPattern $idPattern -AnchorPattern $anchorPattern
-    $navigationIds = @(Get-Ids -Text $text -Pattern "(?m)^- \[($idPattern)：[^\]]+\]\(#$anchorPattern\)\s*$")
-    $anchorIds = @(Get-Ids -Text $text -Pattern "(?m)^<a id=`"($anchorPattern)`"></a>\s*$" |
+    Add-MalformedIdErrors -BookName $book.Name -Text $structureText -IdPattern $idPattern -AnchorPattern $anchorPattern
+    $navigationIds = @(Get-Ids -Text $structureText -Pattern "(?m)^- \[($idPattern)：[^\]]+\]\(#$anchorPattern\)\s*$")
+    $anchorIds = @(Get-Ids -Text $structureText -Pattern "(?m)^<a id=`"($anchorPattern)`"></a>\s*$" |
         ForEach-Object { $_.ToUpperInvariant() })
-    $headingIds = @(Get-Ids -Text $text -Pattern "(?m)^## ($idPattern)：.+$")
-    $headingMatches = @([regex]::Matches($text, "(?m)^## ($idPattern)：.+$"))
-    $returnMatches = @([regex]::Matches($text, '(?m)^\[返回目录\]\(#toc\)\s*$'))
-    $fenceCount = [regex]::Matches($text, '(?m)^[ ]{0,3}`{3,}').Count
+    $headingIds = @(Get-Ids -Text $structureText -Pattern "(?m)^## ($idPattern)：.+$")
+    $headingMatches = @([regex]::Matches($structureText, "(?m)^## ($idPattern)：.+$"))
+    $returnMatches = @([regex]::Matches($structureText, '(?m)^\[返回目录\]\(#toc\)\s*$'))
 
     Add-DuplicateError -BookName $book.Name -Source '目录' -Ids $navigationIds
     Add-DuplicateError -BookName $book.Name -Source '锚点' -Ids $anchorIds
@@ -106,7 +183,7 @@ foreach ($book in $books) {
     $assignedReturnLinks = 0
     for ($index = 0; $index -lt $headingMatches.Count; $index++) {
         $entryStart = $headingMatches[$index].Index
-        $entryEnd = if ($index + 1 -lt $headingMatches.Count) { $headingMatches[$index + 1].Index } else { $text.Length }
+        $entryEnd = if ($index + 1 -lt $headingMatches.Count) { $headingMatches[$index + 1].Index } else { $structureText.Length }
         $entryReturnLinks = @($returnMatches | Where-Object { $_.Index -gt $entryStart -and $_.Index -lt $entryEnd })
         $assignedReturnLinks += $entryReturnLinks.Count
         if ($entryReturnLinks.Count -ne 1) {
@@ -116,10 +193,6 @@ foreach ($book in $books) {
 
     if ($returnMatches.Count -ne $assignedReturnLinks) {
         $errors.Add("$($book.Name) 错题本存在 $($returnMatches.Count - $assignedReturnLinks) 个不在正文条目内的返回目录链接")
-    }
-
-    if (($fenceCount % 2) -ne 0) {
-        $errors.Add("$($book.Name) 错题本的 Markdown 代码围栏数量为奇数：$fenceCount")
     }
 
     $summaries.Add([pscustomobject]@{
