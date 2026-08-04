@@ -33,6 +33,41 @@ function Add-DuplicateError {
     }
 }
 
+function Add-MalformedIdErrors {
+    param(
+        [string]$BookName,
+        [string]$Text,
+        [string]$Prefix,
+        [string]$AnchorPrefix,
+        [string]$IdPattern,
+        [string]$AnchorPattern
+    )
+
+    foreach ($match in [regex]::Matches($Text, '(?m)^- \[([^：\]]+)：[^\]]+\]\(#([^)]+)\)\s*$')) {
+        $navigationId = $match.Groups[1].Value
+        $anchorId = $match.Groups[2].Value
+        if ($navigationId.StartsWith($Prefix, [System.StringComparison]::OrdinalIgnoreCase) -or $anchorId.StartsWith($AnchorPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+            if ($navigationId -notmatch "^$IdPattern$" -or $anchorId -notmatch "^$AnchorPattern$") {
+                $errors.Add("$BookName 错题本的目录包含格式错误的 ID：$navigationId / #$anchorId")
+            }
+        }
+    }
+
+    foreach ($match in [regex]::Matches($Text, '(?m)^<a id="([^"]+)"></a>\s*$')) {
+        $anchorId = $match.Groups[1].Value
+        if ($anchorId.StartsWith($AnchorPrefix, [System.StringComparison]::OrdinalIgnoreCase) -and $anchorId -notmatch "^$AnchorPattern$") {
+            $errors.Add("$BookName 错题本的锚点包含格式错误的 ID：$anchorId")
+        }
+    }
+
+    foreach ($match in [regex]::Matches($Text, '(?m)^## ([^：\s]+)：.+$')) {
+        $headingId = $match.Groups[1].Value
+        if ($headingId.StartsWith($Prefix, [System.StringComparison]::OrdinalIgnoreCase) -and $headingId -notmatch "^$IdPattern$") {
+            $errors.Add("$BookName 错题本的正文包含格式错误的 ID：$headingId")
+        }
+    }
+}
+
 foreach ($book in $books) {
     $path = Join-Path $repositoryRoot $book.Path
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
@@ -44,12 +79,14 @@ foreach ($book in $books) {
     $idPattern = "$($book.Prefix)[0-9]{3}"
     $anchorPattern = "$($book.AnchorPrefix)[0-9]{3}"
 
+    Add-MalformedIdErrors -BookName $book.Name -Text $text -Prefix $book.Prefix -AnchorPrefix $book.AnchorPrefix -IdPattern $idPattern -AnchorPattern $anchorPattern
     $navigationIds = @(Get-Ids -Text $text -Pattern "(?m)^- \[($idPattern)：[^\]]+\]\(#$anchorPattern\)\s*$")
     $anchorIds = @(Get-Ids -Text $text -Pattern "(?m)^<a id=`"($anchorPattern)`"></a>\s*$" |
         ForEach-Object { $_.ToUpperInvariant() })
     $headingIds = @(Get-Ids -Text $text -Pattern "(?m)^## ($idPattern)：.+$")
-    $returnLinks = [regex]::Matches($text, '(?m)^\[返回目录\]\(#toc\)\s*$').Count
-    $fenceCount = [regex]::Matches($text, '(?m)^```').Count
+    $headingMatches = @([regex]::Matches($text, "(?m)^## ($idPattern)：.+$"))
+    $returnMatches = @([regex]::Matches($text, '(?m)^\[返回目录\]\(#toc\)\s*$'))
+    $fenceCount = [regex]::Matches($text, '(?m)^[ ]{0,3}`{3,}').Count
 
     Add-DuplicateError -BookName $book.Name -Source '目录' -Ids $navigationIds
     Add-DuplicateError -BookName $book.Name -Source '锚点' -Ids $anchorIds
@@ -63,8 +100,19 @@ foreach ($book in $books) {
         $errors.Add("$($book.Name) 错题本的目录与正文顺序或 ID 不一致")
     }
 
-    if ($returnLinks -ne $headingIds.Count) {
-        $errors.Add("$($book.Name) 错题本的返回目录链接数为 $returnLinks，应为 $($headingIds.Count)")
+    $assignedReturnLinks = 0
+    for ($index = 0; $index -lt $headingMatches.Count; $index++) {
+        $entryStart = $headingMatches[$index].Index
+        $entryEnd = if ($index + 1 -lt $headingMatches.Count) { $headingMatches[$index + 1].Index } else { $text.Length }
+        $entryReturnLinks = @($returnMatches | Where-Object { $_.Index -gt $entryStart -and $_.Index -lt $entryEnd })
+        $assignedReturnLinks += $entryReturnLinks.Count
+        if ($entryReturnLinks.Count -ne 1) {
+            $errors.Add("$($book.Name) 错题本的 $($headingIds[$index]) 条目返回目录链接数为 $($entryReturnLinks.Count)，应为 1")
+        }
+    }
+
+    if ($returnMatches.Count -ne $assignedReturnLinks) {
+        $errors.Add("$($book.Name) 错题本存在 $($returnMatches.Count - $assignedReturnLinks) 个不在正文条目内的返回目录链接")
     }
 
     if (($fenceCount % 2) -ne 0) {
